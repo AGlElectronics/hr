@@ -3,9 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { ApiError } from '@/api/client';
 import { getSettings, updateSettings, type Settings } from '@/api/settings';
+import { DenConnection } from '@/components/DenConnection';
 import { renderWithFallback } from '@/lib/naming';
 
-const EMPTY: Settings = { organization_name: '', org_email_domain: '', username_template: '', org_email_template: '' };
+const EMPTY: Omit<Settings, 'managed_by'> = { organization_name: '', org_email_domain: '', username_template: '', org_email_template: '' };
 const EXAMPLE = { first: 'Jane', last: 'Doe', nickname: 'Sparky Paws' };
 
 export function SettingsPage() {
@@ -28,6 +29,7 @@ export function SettingsPage() {
     save.error instanceof ApiError ? ((save.error.details as Record<string, string> | undefined) ?? {}) : {};
   const dirty = (Object.keys(EMPTY) as (keyof Settings)[]).some((k) => form[k] !== (settings.data?.[k] ?? ''));
   const domain = form.org_email_domain || 'your-org.example';
+  const managed = settings.data?.managed_by === 'den';
 
   return (
     <div className="p-6 max-w-2xl space-y-6">
@@ -36,11 +38,20 @@ export function SettingsPage() {
         <p className="text-sm text-muted-foreground">Defaults used across HR.</p>
       </div>
 
+      <DenConnection base="/api/den" />
+
+      {managed && (
+        <p className="rounded-md border border-info/30 bg-info-soft px-3 py-2 text-sm text-info-foreground">
+          Managed in Den: change these under Den → Admin → Organisation. HR picks up changes within a minute.
+        </p>
+      )}
+
       <form className="space-y-4 rounded-lg border border-border bg-card p-4"
         onSubmit={(e) => {
           e.preventDefault();
           save.mutate();
         }}>
+        <fieldset disabled={managed} className="space-y-4 disabled:opacity-80">
         <Setting label="Organization name" error={errs.organization_name}
           hint="Used in emails HR sends, e.g. the account-deleted notice.">
           <input className="w-full rounded-md border border-input bg-background px-3 py-2" value={form.organization_name}
@@ -71,9 +82,10 @@ export function SettingsPage() {
           digits, <code>.</code>, <code>-</code> and <code>_</code>. Names are lowercased and accents removed; if a
           placeholder is empty, <code>{'{first}.{last}'}</code> is used.
         </p>
+        </fieldset>
 
         {save.error && Object.keys(errs).length === 0 && <p className="text-sm text-destructive">{(save.error as Error).message}</p>}
-        <div className="flex items-center gap-3">
+        <div className={`flex items-center gap-3 ${managed ? 'hidden' : ''}`}>
           <button type="submit" disabled={save.isPending || !dirty}
             className="rounded-pill bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60">
             {save.isPending ? 'Saving…' : 'Save'}

@@ -22,6 +22,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/auth"
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/db"
+	"github.com/AGlElectronics/hr/backend/internal/denlink"
 	httpx "github.com/AGlElectronics/hr/backend/internal/http"
 	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
@@ -107,6 +108,9 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		logger.Warn().Msg("SMTP_HOST not set — HR cannot email offboarding notices")
 	}
 
+	den := denlink.New(pool, denlink.Config{Slug: "hr", Version: Version, InternalURL: cfg.DenInternalURL}, logger)
+	go den.Run(ctx)
+
 	router := httpx.NewRouter(httpx.Deps{
 		Config:       cfg,
 		Pool:         pool,
@@ -115,6 +119,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		IdP:          idp,
 		Workspace:    ws,
 		Mailer:       mailer,
+		Den:          den,
 	}, Version)
 
 	server := &nethttp.Server{

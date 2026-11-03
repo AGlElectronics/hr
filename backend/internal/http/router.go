@@ -18,6 +18,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/auth"
 	"github.com/AGlElectronics/hr/backend/internal/catalog"
 	"github.com/AGlElectronics/hr/backend/internal/config"
+	"github.com/AGlElectronics/hr/backend/internal/denlink"
 	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
 	"github.com/AGlElectronics/hr/backend/internal/service"
@@ -34,6 +35,8 @@ type Deps struct {
 	Workspace provisioners.WorkspaceProvisioner
 	// Mailer sends HR's own notices; nil when SMTP is not configured.
 	Mailer mail.Sender
+	// Den is the pairing with Den; nil means a fresh standalone client.
+	Den *denlink.Client
 }
 
 // NewRouter wires the chi router with middleware, CORS and routes.
@@ -75,10 +78,18 @@ func NewRouter(deps Deps, version string) http.Handler {
 		writeJSON(w, http.StatusOK, catalog.Self())
 	})
 
+	den := deps.Den
+	if den == nil {
+		den = denlink.New(deps.Pool, denlink.Config{Slug: "hr", Version: version}, deps.Logger)
+	}
+	r.Get("/api/brand", den.BrandHandler("/api/brand/logo"))
+	r.Get("/api/brand/logo", den.LogoHandler)
+
 	auditWriter := audit.NewWriter(deps.Pool, deps.Logger)
+	settingsSvc := service.NewSettingsService(deps.Pool, auditWriter, den)
 	peopleSvc := service.NewPeopleService(deps.Pool, auditWriter)
 	draftSvc := service.NewDraftService(deps.Pool, auditWriter)
-	provSvc := service.NewProvisionService(deps.Pool, draftSvc, peopleSvc, deps.IdP, deps.Workspace, auditWriter)
+	provSvc := service.NewProvisionService(deps.Pool, draftSvc, peopleSvc, deps.IdP, deps.Workspace, auditWriter, settingsSvc)
 	apprSvc := service.NewApprovalService(deps.Pool, draftSvc, auditWriter)
 	notifySvc := service.NewNotifyService(deps.Logger, draftSvc, peopleSvc, auditWriter)
 	groupEnsurer, _ := deps.IdP.(provisioners.GroupEnsurer)
@@ -89,8 +100,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 	accounts, _ := deps.IdP.(provisioners.AccountManager)
 	directory, _ := deps.IdP.(provisioners.Directory)
-	lifecycleSvc := service.NewLifecycleService(deps.Pool, peopleSvc, draftSvc, deptSvc, accounts, deps.Mailer, auditWriter)
-	settingsSvc := service.NewSettingsService(deps.Pool, auditWriter)
+	lifecycleSvc := service.NewLifecycleService(deps.Pool, peopleSvc, draftSvc, deptSvc, accounts, deps.Mailer, settingsSvc, auditWriter)
 	dashSvc := service.NewDashboardService(deps.Pool, peopleSvc, deptSvc)
 	misc := &miscHandler{settings: settingsSvc, dash: dashSvc, directory: directory, depts: deptSvc}
 
@@ -124,6 +134,12 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 			api.Get("/settings", misc.getSettings)
 			api.Put("/settings", misc.updateSettings)
+			api.Route("/den", func(dr chi.Router) {
+				dr.Get("/", den.StatusHandler)
+				dr.Post("/pair", den.PairHandler)
+				dr.Post("/sync", den.SyncHandler)
+				dr.Delete("/pair", den.UnpairHandler)
+			})
 			api.Get("/dashboard", misc.dashboard)
 			api.Get("/idp/groups", misc.idpGroups)
 

@@ -18,6 +18,7 @@ import {
 import { getMe } from '@/api/me';
 import { isOidcAuthMode, signOutOidc } from '@/auth/oidc';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { useModuleBrand } from '@/lib/moduleBrand';
 import { cn } from '@/lib/utils';
 
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
@@ -35,14 +36,21 @@ const NAV: NavItem[] = [
 const DEBUG_NAV: NavItem[] = [{ to: '/keycloak', label: 'Keycloak groups', icon: KeyRound }];
 
 function Wordmark() {
+  const brand = useModuleBrand('/api/brand', 'HR');
   return (
     <div className="flex items-center gap-2.5">
-      <span className="rounded-pill bg-primary-soft p-1.5">
-        <Users className="w-5 h-5 text-primary" />
-      </span>
+      {brand?.logo_url ? (
+        <img src={brand.logo_url} alt="" className="h-8 w-8 object-contain" />
+      ) : (
+        <span className="rounded-pill bg-primary-soft p-1.5">
+          <Users className="w-5 h-5 text-primary" />
+        </span>
+      )}
       <span className="leading-none">
         <span className="block font-sans text-xl font-extrabold tracking-tight">HR</span>
-        <span className="block text-[11px] font-medium text-muted-foreground mt-0.5">People &amp; access</span>
+        <span className="block text-[11px] font-medium text-muted-foreground mt-0.5">
+          {brand?.organization_name || 'People & access'}
+        </span>
       </span>
     </div>
   );

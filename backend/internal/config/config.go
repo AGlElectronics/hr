@@ -62,6 +62,10 @@ type Config struct {
 	SMTPFrom     string
 	SMTPFromName string
 
+	// DenInternalURL replaces the host of pasted Den pairing URLs, for when
+	// Den is reachable under a different address from this backend (Docker).
+	DenInternalURL string
+
 	CORSAllowedOrigins []string
 
 	ShutdownTimeout time.Duration
@@ -100,6 +104,7 @@ func Load() (*Config, error) {
 		SMTPPassword:             getEnv("SMTP_PASSWORD", ""),
 		SMTPFrom:                 getEnv("SMTP_FROM", ""),
 		SMTPFromName:             getEnv("SMTP_FROM_NAME", ""),
+		DenInternalURL:           getEnv("DEN_INTERNAL_URL", ""),
 		CORSAllowedOrigins:       splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3003")),
 		ShutdownTimeout:          getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 	}

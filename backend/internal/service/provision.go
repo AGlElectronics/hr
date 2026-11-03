@@ -26,11 +26,12 @@ type ProvisionService struct {
 	idp       provisioners.IdPProvisioner
 	workspace provisioners.WorkspaceProvisioner
 	audit     *audit.Writer
+	settings  *SettingsService
 }
 
 // NewProvisionService wires a ProvisionService.
-func NewProvisionService(pool *pgxpool.Pool, drafts *DraftService, people *PeopleService, idp provisioners.IdPProvisioner, ws provisioners.WorkspaceProvisioner, aud *audit.Writer) *ProvisionService {
-	return &ProvisionService{pool: pool, drafts: drafts, people: people, idp: idp, workspace: ws, audit: aud}
+func NewProvisionService(pool *pgxpool.Pool, drafts *DraftService, people *PeopleService, idp provisioners.IdPProvisioner, ws provisioners.WorkspaceProvisioner, aud *audit.Writer, settings *SettingsService) *ProvisionService {
+	return &ProvisionService{pool: pool, drafts: drafts, people: people, idp: idp, workspace: ws, audit: aud, settings: settings}
 }
 
 // Trigger kicks off provisioning for a draft: moves it to "provisioning",
@@ -112,7 +113,7 @@ func (s *ProvisionService) runIdPWith(ctx context.Context, draft *domain.Employm
 		}
 	}
 
-	settings, err := (&SettingsService{pool: s.pool}).Get(ctx)
+	settings, err := s.settings.Get(ctx)
 	if err != nil {
 		s.finishJob(ctx, &job, domain.JobStatusFailed, err.Error(), "")
 		return job, provisioners.IdPResult{}, err

@@ -22,23 +22,48 @@ type Settings struct {
 	UsernameTemplate string `json:"username_template"`
 	// OrgEmailTemplate suggests the part before "@", e.g. "{first}.{last}".
 	OrgEmailTemplate string `json:"org_email_template"`
+	// ManagedBy is "den" while HR is paired with Den (read-only here).
+	ManagedBy string `json:"managed_by,omitempty"`
 }
 
-// SettingsService stores Settings as key/value rows.
+// OrgSource supplies organisation settings from Den when HR is paired.
+type OrgSource interface {
+	Paired() bool
+	Setting(key string) (string, bool)
+}
+
+// SettingsService stores Settings as key/value rows. When HR is paired with
+// Den, every field comes from Den instead and Update is refused.
 type SettingsService struct {
 	pool  *pgxpool.Pool
 	audit *audit.Writer
+	den   OrgSource
 }
 
-// NewSettingsService wires a SettingsService.
-func NewSettingsService(pool *pgxpool.Pool, aud *audit.Writer) *SettingsService {
-	return &SettingsService{pool: pool, audit: aud}
+// NewSettingsService wires a SettingsService; den may be nil (standalone).
+func NewSettingsService(pool *pgxpool.Pool, aud *audit.Writer, den OrgSource) *SettingsService {
+	return &SettingsService{pool: pool, audit: aud, den: den}
 }
+
+// ErrManagedInDen is returned by Update while HR is paired with Den.
+var ErrManagedInDen = httperror.New(httperror.CodeConflict, "These settings are managed in Den (Admin → Organisation).")
 
 var domainRE = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$`)
 
 // Get returns the current settings; unset templates get their defaults.
 func (s *SettingsService) Get(ctx context.Context) (*Settings, error) {
+	if s.den != nil && s.den.Paired() {
+		out := &Settings{ManagedBy: "den", UsernameTemplate: DefaultUsernameTemplate, OrgEmailTemplate: DefaultOrgEmailTemplate}
+		out.OrganizationName, _ = s.den.Setting("organization_name")
+		out.OrgEmailDomain, _ = s.den.Setting("org_email_domain")
+		if v, _ := s.den.Setting("username_template"); v != "" && ValidateTemplate(v) == "" {
+			out.UsernameTemplate = v
+		}
+		if v, _ := s.den.Setting("org_email_template"); v != "" && ValidateTemplate(v) == "" {
+			out.OrgEmailTemplate = v
+		}
+		return out, nil
+	}
 	rows, err := s.pool.Query(ctx, `SELECT key, value FROM settings`)
 	if err != nil {
 		return nil, httperror.Internal(err)
@@ -89,6 +114,9 @@ func (in *Settings) Normalize() map[string]string {
 
 // Update validates and stores the settings.
 func (s *SettingsService) Update(ctx context.Context, actor string, in Settings) (*Settings, error) {
+	if s.den != nil && s.den.Paired() {
+		return nil, ErrManagedInDen
+	}
 	if fields := in.Normalize(); len(fields) > 0 {
 		return nil, httperror.Validation("validation failed", fields)
 	}

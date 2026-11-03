@@ -28,12 +28,13 @@ type LifecycleService struct {
 	depts    *DepartmentService
 	accounts provisioners.AccountManager // nil when the IdP cannot manage accounts
 	mailer   mail.Sender                 // nil when email is not configured
+	settings *SettingsService
 	audit    *audit.Writer
 }
 
 // NewLifecycleService wires a LifecycleService.
-func NewLifecycleService(pool *pgxpool.Pool, people *PeopleService, drafts *DraftService, depts *DepartmentService, accounts provisioners.AccountManager, mailer mail.Sender, aud *audit.Writer) *LifecycleService {
-	return &LifecycleService{pool: pool, people: people, drafts: drafts, depts: depts, accounts: accounts, mailer: mailer, audit: aud}
+func NewLifecycleService(pool *pgxpool.Pool, people *PeopleService, drafts *DraftService, depts *DepartmentService, accounts provisioners.AccountManager, mailer mail.Sender, settings *SettingsService, aud *audit.Writer) *LifecycleService {
+	return &LifecycleService{pool: pool, people: people, drafts: drafts, depts: depts, accounts: accounts, mailer: mailer, settings: settings, audit: aud}
 }
 
 // PersonAccess is what a person currently holds through HR.
@@ -429,7 +430,7 @@ func (s *LifecycleService) sendDeletedNotice(ctx context.Context, p *domain.Pers
 	if p.EmailMissing || strings.TrimSpace(p.Email) == "" {
 		return errors.New("they have no private email on file")
 	}
-	settings, err := (&SettingsService{pool: s.pool}).Get(ctx)
+	settings, err := s.settings.Get(ctx)
 	if err != nil {
 		return err
 	}
