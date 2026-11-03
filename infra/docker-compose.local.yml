@@ -1,0 +1,25 @@
+# Local overlay for Docker Desktop. Run with:
+#
+#   docker compose --env-file .env \
+#     -f infra/docker-compose.yml \
+#     -f infra/docker-compose.local.yml up -d --build
+#
+# This file adds:
+#   - Adminer DB browser on http://localhost:8083 (LOCAL DEV ONLY)
+#
+# It intentionally does NOT change the published backend/frontend/postgres
+# ports — the base file already uses dedicated per-module ports so there is
+# nothing to shift around on a dev machine running multiple modules.
+
+services:
+  db-admin:
+    image: adminer:4
+    container_name: hr-db-admin
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres

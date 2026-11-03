@@ -1,0 +1,59 @@
+# syntax=docker/dockerfile:1.7
+#
+# HR API server image. Does NOT run migrations — those live in a separate
+# image (Dockerfile.migrate) that Compose orchestrates as a one-shot.
+
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+
+ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false
+
+# sqlc regenerates internal/repository/sqlcgen/ from queries/*.sql at
+# build time. The directory is gitignored (see hr/.gitignore) — CI
+# regenerates on every job, and this Dockerfile does the same so a plain
+# `docker build .` works without any host-side prep. Keep SQLC_VERSION in
+# sync with CI pipelines. Mirrors stash/infra/Dockerfile.backend.
+ARG SQLC_VERSION=v1.30.0
+RUN apk add --no-cache wget ca-certificates tar && \
+    arch="$(uname -m)" && \
+    case "$arch" in \
+        x86_64) sqlc_arch=amd64 ;; \
+        aarch64) sqlc_arch=arm64 ;; \
+        *) echo "unsupported architecture $arch" >&2; exit 1 ;; \
+    esac && \
+    ver="${SQLC_VERSION#v}" && \
+    wget -qO- "https://github.com/sqlc-dev/sqlc/releases/download/${SQLC_VERSION}/sqlc_${ver}_linux_${sqlc_arch}.tar.gz" \
+        | tar -xz -C /usr/local/bin sqlc && \
+    chmod +x /usr/local/bin/sqlc && \
+    sqlc version
+
+COPY backend/go.mod backend/go.sum* ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    (test -f go.sum && go mod download) || go mod tidy
+
+COPY backend ./
+
+# Wipe whatever the local checkout had under sqlcgen/ (stale code from a
+# previous `sqlc generate` run) and regenerate it from the queries we
+# just copied in. Without this step, schema/query changes that haven't
+# been regenerated locally would silently produce a build with old
+# bindings.
+RUN rm -rf internal/repository/sqlcgen && sqlc generate
+
+ARG VERSION=dev
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go build -trimpath \
+        -ldflags "-s -w -X github.com/AGlElectronics/hr/backend/internal/app.Version=${VERSION}" \
+        -o /out/server ./cmd/server
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/server /server
+# Container listens on :8080 (HTTP_ADDR default). The HOST-side mapping is
+# whatever Compose / K8s wires — host port 8110 is the reserved HR dev
+# port, but containers all speak :8080 internally so a service mesh /
+# sidecar config stays uniform across modules.
+EXPOSE 8080
+USER nonroot:nonroot
+ENTRYPOINT ["/server"]
