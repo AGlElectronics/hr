@@ -98,6 +98,11 @@ func Unauthorized(message string) *Error {
 	return New(CodeUnauthorized, message)
 }
 
+// Forbidden: authenticated, but not allowed.
+func Forbidden(message string) *Error {
+	return New(CodeForbidden, message)
+}
+
 // Upstream reports a failure in an external system (e.g. the IdP); unlike
 // Internal, the message is shown so HR knows what to fix.
 func Upstream(system string, cause error) *Error {

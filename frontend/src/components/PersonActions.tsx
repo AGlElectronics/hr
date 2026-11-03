@@ -53,19 +53,19 @@ export function PersonActions({ personId }: { personId: string }) {
   return (
     <div className="space-y-4">
       {lastWarnings.length > 0 && (
-        <ul className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        <ul className="space-y-1 rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-sm text-warning-foreground">
           {lastWarnings.map((w) => <li key={w}>{w}</li>)}
         </ul>
       )}
       {!offboarded && account.state === 'missing' && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        <p className="rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-sm text-warning-foreground">
           HR has a Keycloak account on file for this person, but it no longer exists in Keycloak (deleted there, or
           created by the old dev setup). Access can&apos;t be changed until they get a new account: offboard and onboard
           them again.
         </p>
       )}
       {!offboarded && account.state === 'unreachable' && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">{account.error}</p>
+        <p className="rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-sm text-warning-foreground">{account.error}</p>
       )}
       {offboarded && (
         <div className="rounded-md border border-border bg-muted/60 px-3 py-2 text-sm">
@@ -166,7 +166,7 @@ function AccountBadge({ account }: { account: AccountState }) {
     unreachable: 'Keycloak unreachable',
   }[account.state];
   const tone = account.state === 'missing' || account.state === 'unreachable' || (account.state === 'linked' && !account.enabled)
-    ? 'text-amber-700'
+    ? 'text-warning'
     : 'text-muted-foreground';
   return (
     <span className={`inline-flex items-center gap-1 text-xs ${tone}`} title={account.username}>

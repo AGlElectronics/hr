@@ -1,11 +1,11 @@
 import { PERSON_STATUSES, type PersonStatus } from '@/api/people';
 
 const tone: Record<PersonStatus, string> = {
-  applicant: 'bg-slate-100 text-slate-700',
-  onboarding: 'bg-amber-100 text-amber-800',
-  active: 'bg-emerald-100 text-emerald-800',
-  paused: 'bg-sky-100 text-sky-800',
-  offboarded: 'bg-zinc-200 text-zinc-600',
+  applicant: 'bg-primary-soft text-primary',
+  onboarding: 'bg-warning-soft text-warning-foreground',
+  active: 'bg-success-soft text-success-foreground',
+  paused: 'bg-info-soft text-info-foreground',
+  offboarded: 'bg-muted text-muted-foreground',
 };
 
 export function PersonStatusBadge({ status }: { status: PersonStatus }) {

@@ -53,7 +53,7 @@ export function PersonQuickPanel({ personId, onClose }: { personId: string; onCl
             <dl className="grid grid-cols-[7rem_1fr] gap-x-2 gap-y-1 text-sm">
               <dt className="text-muted-foreground">Email</dt>
               <dd className="break-words">
-                {p.email_missing ? <span className="font-semibold text-amber-700">Missing</span> : p.email}
+                {p.email_missing ? <span className="font-semibold text-warning">Missing</span> : p.email}
               </dd>
               <dt className="text-muted-foreground">Org email</dt>
               <dd className="break-words">{p.org_email || '—'}</dd>

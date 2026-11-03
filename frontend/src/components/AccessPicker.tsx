@@ -298,7 +298,7 @@ function RoleCard({
         ) : null}
         <span className="rounded-pill bg-muted px-1.5 py-0.5">{role.scope}</span>
         {fromDefault && (
-          <span className="rounded-pill bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-800">
+          <span className="rounded-pill bg-warning-soft px-1.5 py-0.5 font-semibold text-warning-foreground">
             department default
           </span>
         )}

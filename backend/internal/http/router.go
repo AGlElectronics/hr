@@ -101,50 +101,54 @@ func NewRouter(deps Deps, version string) http.Handler {
 		api.Use(auth.Middleware(deps.Config, deps.OIDCVerifier))
 
 		api.Get("/me", meHandler(deps.Config))
-		api.Get("/access-catalog", func(w http.ResponseWriter, req *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]any{"modules": fetcher.FetchAll(req.Context())})
-		})
 
-		api.Route("/people", func(pr chi.Router) {
-			pr.Get("/", people.list)
-			pr.Post("/", people.create)
-			pr.Get("/{id}", people.get)
-			pr.Put("/{id}", people.update)
-			pr.Get("/{id}/access", people.access)
-			pr.Put("/{id}/access", people.changeAccess)
-			pr.Post("/{id}/status", people.setStatus)
-			pr.Post("/{id}/offboard", people.offboard)
-		})
+		api.Group(func(api chi.Router) {
+			api.Use(auth.RequireAccess)
+			api.Get("/access-catalog", func(w http.ResponseWriter, req *http.Request) {
+				writeJSON(w, http.StatusOK, map[string]any{"modules": fetcher.FetchAll(req.Context())})
+			})
 
-		api.Get("/settings", misc.getSettings)
-		api.Put("/settings", misc.updateSettings)
-		api.Get("/dashboard", misc.dashboard)
-		api.Get("/idp/groups", misc.idpGroups)
+			api.Route("/people", func(pr chi.Router) {
+				pr.Get("/", people.list)
+				pr.Post("/", people.create)
+				pr.Get("/{id}", people.get)
+				pr.Put("/{id}", people.update)
+				pr.Get("/{id}/access", people.access)
+				pr.Put("/{id}/access", people.changeAccess)
+				pr.Post("/{id}/status", people.setStatus)
+				pr.Post("/{id}/offboard", people.offboard)
+			})
 
-		api.Route("/departments", func(dr chi.Router) {
-			dr.Get("/", depts.list)
-			dr.Post("/", depts.create)
-			dr.Get("/{id}", depts.get)
-			dr.Put("/{id}", depts.update)
-		})
+			api.Get("/settings", misc.getSettings)
+			api.Put("/settings", misc.updateSettings)
+			api.Get("/dashboard", misc.dashboard)
+			api.Get("/idp/groups", misc.idpGroups)
 
-		api.Route("/onboardings", func(or chi.Router) {
-			or.Post("/", onboarding.start)
-			or.Get("/{id}", onboarding.get)
-			or.Put("/{id}/details", onboarding.updateDetails)
-			or.Post("/{id}/complete", onboarding.complete)
-		})
+			api.Route("/departments", func(dr chi.Router) {
+				dr.Get("/", depts.list)
+				dr.Post("/", depts.create)
+				dr.Get("/{id}", depts.get)
+				dr.Put("/{id}", depts.update)
+			})
 
-		api.Route("/drafts", func(dr chi.Router) {
-			dr.Get("/", drafts.list)
-			dr.Post("/", drafts.create)
-			dr.Get("/{id}", drafts.get)
-			dr.Put("/{id}/roles", drafts.assignRoles)
-			dr.Post("/{id}/provision", prov.trigger)
-			dr.Get("/{id}/provisioning-jobs", prov.listJobs)
-			dr.Post("/{id}/approvals", appr.decide)
-			dr.Get("/{id}/approvals", appr.list)
-			dr.Post("/{id}/notify", notify.send)
+			api.Route("/onboardings", func(or chi.Router) {
+				or.Post("/", onboarding.start)
+				or.Get("/{id}", onboarding.get)
+				or.Put("/{id}/details", onboarding.updateDetails)
+				or.Post("/{id}/complete", onboarding.complete)
+			})
+
+			api.Route("/drafts", func(dr chi.Router) {
+				dr.Get("/", drafts.list)
+				dr.Post("/", drafts.create)
+				dr.Get("/{id}", drafts.get)
+				dr.Put("/{id}/roles", drafts.assignRoles)
+				dr.Post("/{id}/provision", prov.trigger)
+				dr.Get("/{id}/provisioning-jobs", prov.listJobs)
+				dr.Post("/{id}/approvals", appr.decide)
+				dr.Get("/{id}/approvals", appr.list)
+				dr.Post("/{id}/notify", notify.send)
+			})
 		})
 	})
 
@@ -153,11 +157,15 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 func meHandler(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		name := actor.Name(r.Context(), "")
+		a, _ := actor.FromContext(r.Context())
+		out := map[string]any{"username": "", "auth_mode": cfg.AuthMode, "has_access": false, "groups": []string{}}
+		if a != nil {
+			out["username"], out["has_access"] = a.Username, a.HasAccess
+			if a.Groups != nil {
+				out["groups"] = a.Groups
+			}
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"username":  name,
-			"auth_mode": cfg.AuthMode,
-		})
+		_ = json.NewEncoder(w).Encode(out)
 	}
 }

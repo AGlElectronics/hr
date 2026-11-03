@@ -24,7 +24,7 @@ export function OnboardingSteps({ current, id, locked }: { current: OnboardingSt
           <span
             className={cn(
               'inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold',
-              done ? 'bg-emerald-600 text-white' : active ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground',
+              done ? 'bg-success text-white' : active ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground',
             )}
           >
             {done ? <Check className="h-3.5 w-3.5" /> : i + 1}

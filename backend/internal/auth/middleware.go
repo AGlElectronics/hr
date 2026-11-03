@@ -29,7 +29,7 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier) func(http.Handle
 				if name == "" {
 					name = "dev-hr-admin"
 				}
-				ctx = actor.With(ctx, &actor.Actor{Username: name})
+				ctx = actor.With(ctx, &actor.Actor{Username: name, HasAccess: true})
 
 			case config.AuthModeOIDC:
 				if oidcVerifier == nil {
@@ -47,7 +47,11 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier) func(http.Handle
 					httperror.Render(w, r, httperror.Unauthorized("invalid token"))
 					return
 				}
-				ctx = actor.With(ctx, &actor.Actor{Username: DisplayName(claims)})
+				ctx = actor.With(ctx, &actor.Actor{
+					Username:  DisplayName(claims),
+					Groups:    claims.Groups,
+					HasAccess: inAnyGroup(claims.Groups, cfg.AccessGroups),
+				})
 
 			default:
 				httperror.Render(w, r, httperror.Internal(errors.New("unknown auth mode")))
@@ -57,6 +61,31 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier) func(http.Handle
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// RequireAccess rejects callers who are signed in but not allowed to use HR.
+func RequireAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a, ok := actor.FromContext(r.Context())
+		if !ok || !a.HasAccess {
+			httperror.Render(w, r, httperror.Forbidden("you don't have access to HR"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// inAnyGroup matches group names with or without Keycloak's leading "/".
+func inAnyGroup(have, want []string) bool {
+	for _, h := range have {
+		h = strings.TrimPrefix(h, "/")
+		for _, w := range want {
+			if strings.EqualFold(h, strings.TrimPrefix(w, "/")) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func bearerFromHeader(h string) string {

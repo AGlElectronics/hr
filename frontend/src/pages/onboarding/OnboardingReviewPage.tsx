@@ -71,7 +71,7 @@ export function OnboardingReviewPage() {
       {result && <CompleteOutcome result={result} email={p.email} />}
 
       {missing.length > 0 && !done && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+        <div className="rounded-md border border-warning/40 bg-warning-soft p-3 text-sm text-warning-foreground">
           <p className="flex items-center gap-2 font-semibold">
             <AlertTriangle className="h-4 w-4" /> The volunteer profile is incomplete
           </p>
@@ -162,7 +162,7 @@ function CompleteOutcome({ result, email }: { result: CompleteResult; email: str
     );
   }
   return (
-    <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900 space-y-1">
+    <div className="rounded-md border border-success/40 bg-success-soft p-3 text-sm text-success-foreground space-y-1">
       <p className="flex items-center gap-2 font-semibold">
         <CheckCircle2 className="h-4 w-4" />
         {result.account_created ? 'Account created' : 'Existing account updated'} · groups:{' '}
@@ -176,7 +176,7 @@ function CompleteOutcome({ result, email }: { result: CompleteResult; email: str
         <p>
           The email could not be sent{result.password_setup_error ? ` (${result.password_setup_error})` : ''}. Give them
           this one-time password instead (they must change it on first login):{' '}
-          <code className="rounded bg-white px-1.5 py-0.5 font-mono">{result.temporary_password}</code>
+          <code className="rounded bg-background px-1.5 py-0.5 font-mono">{result.temporary_password}</code>
         </p>
       ) : (
         <p>They already had an account, so no password email was needed.</p>

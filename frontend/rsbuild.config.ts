@@ -31,9 +31,9 @@ export default defineConfig({
   },
   html: {
     template: './public/index.html',
-    title: 'HR — Con Services',
+    title: 'HR',
     meta: {
-      description: 'Con Services HR provisioning',
+      description: 'HR: volunteer onboarding and access',
       'theme-color': '#18181b',
     },
   },

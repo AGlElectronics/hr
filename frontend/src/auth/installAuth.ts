@@ -1,5 +1,6 @@
 import { setAuthHeadersResolver } from '@/api/client';
 import { getUserManager, isOidcAuthMode } from '@/auth/oidc';
+import { installSessionSync } from '@/auth/session';
 
 const DEV_USER =
   (import.meta.env.VITE_DEV_USER as string | undefined) ?? 'dev-hr-admin';
@@ -21,6 +22,7 @@ export function installAuth(): void {
       }
       return { Authorization: `Bearer ${bearer}` };
     });
+    installSessionSync();
     return;
   }
   setAuthHeadersResolver(async () => ({ 'X-Dev-User': DEV_USER }));

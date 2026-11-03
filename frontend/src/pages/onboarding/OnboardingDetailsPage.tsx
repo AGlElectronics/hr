@@ -130,7 +130,7 @@ function DetailsForm({
               ))}
             </select>
             {id && initialDept && departmentId !== initialDept && (
-              <span className="mt-1 block text-xs text-amber-700">
+              <span className="mt-1 block text-xs text-warning">
                 Changing department resets the access plan to the new department&apos;s defaults.
               </span>
             )}

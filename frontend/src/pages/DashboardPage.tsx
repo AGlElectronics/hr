@@ -109,11 +109,11 @@ function QuickStart({ department, onDepartment, departments }: {
         <input className={inputCls} type="email" placeholder="Private email (login)" value={email}
           onChange={(e) => setEmail(e.target.value)} />
         {existing.length > 0 && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+          <div className="rounded-md border border-warning/40 bg-warning-soft p-2 text-xs text-warning-foreground">
             <p className="mb-1 font-medium">Already known to HR?</p>
             {existing.map((p) => (
               <Link key={p.id} to="/onboarding/new" search={{ person: p.id, department: department || undefined }}
-                className="flex items-center justify-between rounded px-1 py-0.5 hover:bg-amber-100">
+                className="flex items-center justify-between rounded px-1 py-0.5 hover:bg-warning/20">
                 <span>{p.display_name} · {p.email_missing ? 'no email' : p.email}</span>
                 <span>Onboard them →</span>
               </Link>
@@ -175,14 +175,14 @@ const KIND_LABEL: Record<AttentionItem['kind'], string> = {
 
 function Attention({ items, loading, onOpen }: { items: AttentionItem[]; loading: boolean; onOpen: (id: string) => void }) {
   return (
-    <Panel title={`Needs attention${items.length ? ` (${items.length})` : ''}`} icon={<AlertTriangle className="h-4 w-4 text-amber-600" />}>
+    <Panel title={`Needs attention${items.length ? ` (${items.length})` : ''}`} icon={<AlertTriangle className="h-4 w-4 text-warning" />}>
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {!loading && items.length === 0 && <p className="text-sm text-muted-foreground">Nothing to fix right now.</p>}
       <ul className="max-h-80 divide-y divide-border overflow-y-auto">
         {items.map((it) => (
           <li key={`${it.kind}-${it.person_id}-${it.draft_id ?? ''}`} className="flex items-start justify-between gap-3 py-2 text-sm">
             <div className="min-w-0">
-              <span className="mr-2 rounded-pill bg-amber-100 px-2 py-0.5 text-xs text-amber-900">{KIND_LABEL[it.kind]}</span>
+              <span className="mr-2 rounded-pill bg-warning-soft px-2 py-0.5 text-xs text-warning-foreground">{KIND_LABEL[it.kind]}</span>
               <span className="font-medium">{it.display_name}</span>
               <p className="truncate text-xs text-muted-foreground" title={it.detail}>{it.detail}</p>
             </div>

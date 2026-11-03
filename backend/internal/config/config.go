@@ -37,6 +37,8 @@ type Config struct {
 	OIDCIssuerURL string
 	OIDCClientID  string
 	OIDCAudience  string
+	// AccessGroups are the IdP groups allowed to use HR at all (OIDC mode).
+	AccessGroups []string
 
 	// Keycloak Admin API (IdP provisioner). When BaseURL is set, HR creates
 	// real users in the shared realm instead of using FakeIdP.
@@ -75,6 +77,7 @@ func Load() (*Config, error) {
 		OIDCIssuerURL:            getEnv("OIDC_ISSUER_URL", ""),
 		OIDCClientID:             getEnv("OIDC_CLIENT_ID", ""),
 		OIDCAudience:             getEnv("OIDC_AUDIENCE", ""),
+		AccessGroups:             splitCSV(getEnv("HR_ACCESS_GROUPS", "hr-admin")),
 		KeycloakBaseURL:          getEnv("KEYCLOAK_BASE_URL", ""),
 		KeycloakRealm:            getEnv("KEYCLOAK_REALM", "conservices"),
 		KeycloakClientID:         getEnv("KEYCLOAK_CLIENT_ID", "hr-provisioner"),

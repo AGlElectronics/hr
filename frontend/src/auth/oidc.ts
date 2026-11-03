@@ -30,7 +30,10 @@ export function getUserManager(): UserManager | null {
     response_type: 'code',
     scope,
     automaticSilentRenew: true,
-    userStore: new WebStorageStateStore({ store: window.sessionStorage }),
+    silent_redirect_uri: `${window.location.origin}/silent-callback.html`,
+    monitorSession: true,
+    // Shared by all tabs so a sign-out / user switch reaches every tab (see session.ts).
+    userStore: new WebStorageStateStore({ store: window.localStorage }),
   });
   return manager;
 }

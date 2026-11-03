@@ -8,9 +8,13 @@ type ctxKey int
 
 const key ctxKey = 1
 
-// Actor is the stamped identity for writes. Not a full authz principal.
+// Actor is the authenticated caller.
 type Actor struct {
 	Username string
+	Groups   []string
+	// HasAccess is true when the caller may use HR (member of an HR access
+	// group, or dev mode).
+	HasAccess bool
 }
 
 // With attaches an Actor to ctx.

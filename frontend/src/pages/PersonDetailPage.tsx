@@ -61,12 +61,12 @@ export function PersonDetailPage() {
       </div>
 
       {syncWarning && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+        <p className="rounded-md border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-warning-foreground">
           Profile saved, but Keycloak could not be updated: {syncWarning}
         </p>
       )}
       {p.email_missing && !editing && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+        <p className="rounded-md border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-warning-foreground">
           This person has no email yet. Add one before onboarding — it becomes their login username.
         </p>
       )}

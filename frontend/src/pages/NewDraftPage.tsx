@@ -54,7 +54,7 @@ export function NewDraftPage() {
             ))}
           </select>
           {selected?.email_missing && (
-            <span className="mt-1 block text-xs text-amber-700">
+            <span className="mt-1 block text-xs text-warning">
               This person has no email yet; provisioning will be refused until one is set on their profile.
             </span>
           )}

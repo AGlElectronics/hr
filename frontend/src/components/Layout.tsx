@@ -1,9 +1,23 @@
+import { useState } from 'react';
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Building2, ClipboardCheck, KeyRound, LayoutDashboard, LogOut, Settings, UserPlus, Users } from 'lucide-react';
+import {
+  Bug,
+  Building2,
+  ChevronDown,
+  ClipboardCheck,
+  KeyRound,
+  LayoutDashboard,
+  LogOut,
+  Settings,
+  ShieldX,
+  UserPlus,
+  Users,
+} from 'lucide-react';
 
-import { apiRequest } from '@/api/client';
+import { getMe } from '@/api/me';
 import { isOidcAuthMode, signOutOidc } from '@/auth/oidc';
+import { ThemeToggle } from '@/components/ThemeToggle';
 import { cn } from '@/lib/utils';
 
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
@@ -14,11 +28,11 @@ const NAV: NavItem[] = [
   { to: '/people', label: 'People', icon: Users },
   { to: '/departments', label: 'Departments', icon: Building2 },
   { to: '/approvals', label: 'Approvals', icon: ClipboardCheck },
-  { to: '/keycloak', label: 'Keycloak', icon: KeyRound },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
-type Me = { username: string; auth_mode: string };
+/** Technical views for whoever runs the stack; tucked away from day-to-day HR work. */
+const DEBUG_NAV: NavItem[] = [{ to: '/keycloak', label: 'Keycloak groups', icon: KeyRound }];
 
 function Wordmark() {
   return (
@@ -28,30 +42,25 @@ function Wordmark() {
       </span>
       <span className="leading-none">
         <span className="block font-sans text-xl font-extrabold tracking-tight">HR</span>
-        <span className="block text-[11px] font-medium text-muted-foreground mt-0.5">
-          Con Services
-        </span>
+        <span className="block text-[11px] font-medium text-muted-foreground mt-0.5">People &amp; access</span>
       </span>
     </div>
   );
 }
 
-function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+function NavLinks({ items }: { items: NavItem[] }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   return (
     <div className="space-y-0.5">
-      {NAV.map((item) => {
+      {items.map((item) => {
         const isActive = pathname === item.to || pathname.startsWith(item.to + '/');
         return (
           <Link
             key={item.to}
             to={item.to}
-            onClick={onNavigate}
             className={cn(
               'flex items-center gap-2.5 px-3 py-2 rounded-pill text-sm font-medium whitespace-nowrap transition-colors',
-              isActive
-                ? 'bg-primary-soft text-primary'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+              isActive ? 'bg-primary-soft text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
           >
             <item.icon className="w-4 h-4 shrink-0" />
@@ -63,45 +72,97 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+function DebugSection() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const [open, setOpen] = useState(() => DEBUG_NAV.some((i) => pathname.startsWith(i.to)));
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2.5 rounded-pill px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+        aria-expanded={open}
+      >
+        <Bug className="h-4 w-4 shrink-0" />
+        Debug
+        <ChevronDown className={cn('ml-auto h-4 w-4 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="ml-3 border-l border-border pl-2">
+          <NavLinks items={DEBUG_NAV} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SignOutButton() {
+  if (!isOidcAuthMode()) return null;
+  return (
+    <button type="button" onClick={() => void signOutOidc()}
+      className="inline-flex items-center gap-1 text-primary hover:underline">
+      <LogOut className="w-3 h-3" /> Sign out
+    </button>
+  );
+}
+
+function NoAccess({ username }: { username: string }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background p-6 text-foreground">
+      <div className="max-w-md space-y-4 rounded-lg border border-border bg-card p-6 text-center">
+        <ShieldX className="mx-auto h-10 w-10 text-destructive" />
+        <h1 className="text-xl font-bold">No access to HR</h1>
+        <p className="text-sm text-muted-foreground">
+          You are signed in as <span className="font-semibold text-foreground">{username}</span>, but your account is not
+          allowed to use HR. Ask an HR admin to give you HR access.
+        </p>
+        <div className="flex justify-center gap-3 text-sm">
+          <SignOutButton />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Layout() {
-  const me = useQuery({
-    queryKey: ['me'],
-    queryFn: () => apiRequest<Me>('/api/me'),
-  });
+  const me = useQuery({ queryKey: ['me'], queryFn: getMe });
+
+  if (me.isLoading) {
+    return <div className="min-h-screen bg-background p-6 text-muted-foreground">Loading…</div>;
+  }
+  if (me.data && !me.data.has_access) {
+    return <NoAccess username={me.data.username} />;
+  }
 
   return (
     <div className="min-h-screen w-full flex flex-col md:flex-row bg-background text-foreground">
-      <aside className="shrink-0 md:w-60 md:min-h-screen border-b md:border-b-0 md:border-r border-border bg-card flex flex-col">
+      <aside className="shrink-0 md:w-60 md:h-screen md:sticky md:top-0 border-b md:border-b-0 md:border-r border-border bg-card flex flex-col">
         <div className="px-4 py-4 border-b border-border">
           <Wordmark />
         </div>
         <nav className="p-2 md:flex-1 overflow-y-auto">
-          <NavLinks />
+          <NavLinks items={NAV} />
         </nav>
-        <div className="mt-auto p-3 border-t border-border text-xs text-muted-foreground">
+        <div className="p-2 border-t border-border space-y-0.5">
+          <DebugSection />
+          <ThemeToggle className="w-full" />
+        </div>
+        <div className="p-3 border-t border-border text-xs text-muted-foreground">
           <div>
-            Signed in as{' '}
-            <span className="font-semibold text-foreground">
-              {me.data?.username ?? '…'}
-            </span>
+            Signed in as <span className="font-semibold text-foreground">{me.data?.username ?? '…'}</span>
           </div>
-          <div className="mt-1 text-[10px] uppercase tracking-wider">
-            {me.data?.auth_mode ?? '…'}
+          <div className="mt-2">
+            <SignOutButton />
           </div>
-          {isOidcAuthMode() ? (
-            <button
-              type="button"
-              onClick={() => void signOutOidc()}
-              className="mt-2 inline-flex items-center gap-1 text-primary hover:underline"
-            >
-              <LogOut className="w-3 h-3" /> Sign out
-            </button>
-          ) : null}
         </div>
       </aside>
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col w-full md:min-h-screen">
-        <Outlet />
+        {me.error ? (
+          <p className="p-6 text-destructive">Could not load your account: {(me.error as Error).message}</p>
+        ) : (
+          <Outlet />
+        )}
       </main>
     </div>
   );

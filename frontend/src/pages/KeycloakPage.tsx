@@ -71,7 +71,7 @@ export function KeycloakPage() {
 
       {groups.error && <p className="text-destructive">{(groups.error as Error).message}</p>}
       {groups.data && !groups.data.available && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+        <p className="rounded-md border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-warning-foreground">
           HR is running with the fake identity provider, so there is no Keycloak to show.
         </p>
       )}
@@ -124,7 +124,7 @@ export function KeycloakPage() {
                           <td className="px-4 py-2">{[m.first_name, m.last_name].filter(Boolean).join(' ') || '—'}</td>
                           <td className="px-4 py-2 font-mono text-xs">{m.username}</td>
                           <td className="px-4 py-2 text-xs">
-                            {m.enabled ? <span className="text-green-700">enabled</span> : <span className="text-destructive">disabled</span>}
+                            {m.enabled ? <span className="text-success">enabled</span> : <span className="text-destructive">disabled</span>}
                           </td>
                           <td className="px-4 py-2 text-right">
                             {pid ? (

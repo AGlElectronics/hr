@@ -4,9 +4,9 @@
     <script>
       (function () {
         try {
-          if (localStorage.getItem('hr-theme') === 'dark') {
-            document.documentElement.classList.add('dark');
-          }
+          var saved = localStorage.getItem('hr-theme');
+          var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (dark) document.documentElement.classList.add('dark');
         } catch (e) {
           /* no-op */
         }
@@ -15,7 +15,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#18181b" />
-    <title>HR — Awoostria</title>
+    <title>HR</title>
   </head>
   <body>
     <div id="root"></div>

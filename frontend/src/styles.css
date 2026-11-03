@@ -3,9 +3,8 @@
 @tailwind utilities;
 
 /*
- * HR theme — minimal clone of the Awoostria tokens so the shell matches the
- * rest of the suite visually without pulling the full brand kit. Expand when
- * the HR UI gets a dedicated design pass.
+ * HR theme tokens (light + .dark). Status colours (success/warning/info) have
+ * soft/foreground pairs so notices stay readable in both modes.
  */
 @layer base {
   :root {
@@ -22,7 +21,14 @@
     --destructive: 0 76% 50%;
     --destructive-foreground: 0 0% 100%;
     --success: 152 55% 32%;
+    --success-soft: 149 70% 92%;
+    --success-foreground: 152 70% 18%;
     --warning: 32 90% 38%;
+    --warning-soft: 48 96% 90%;
+    --warning-foreground: 26 83% 20%;
+    --info: 200 80% 40%;
+    --info-soft: 204 94% 93%;
+    --info-foreground: 201 80% 24%;
     --border: 344 19% 88%;
     --input: 344 19% 88%;
     --ring: 349 74% 59%;
@@ -43,9 +49,17 @@
     --destructive: 0 70% 52%;
     --destructive-foreground: 0 0% 100%;
     --success: 152 45% 58%;
+    --success-soft: 152 35% 15%;
+    --success-foreground: 150 60% 82%;
     --warning: 38 90% 60%;
+    --warning-soft: 38 50% 16%;
+    --warning-foreground: 43 96% 82%;
+    --info: 200 80% 65%;
+    --info-soft: 200 40% 17%;
+    --info-foreground: 200 80% 85%;
     --border: 340 6% 22%;
     --input: 340 6% 22%;
+    --ring: 349 74% 59%;
     color-scheme: dark;
   }
 }

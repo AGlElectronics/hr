@@ -38,7 +38,7 @@ export function PeoplePage() {
       </div>
 
       {missing > 0 && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+        <p className="rounded-md border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-warning-foreground">
           {missing} {missing === 1 ? 'person has' : 'people have'} no email yet. Email is required for login and
           provisioning — open them and add one.
         </p>
@@ -80,7 +80,7 @@ export function PeoplePage() {
                 </td>
                 <td className="px-4 py-2">
                   {p.email_missing ? (
-                    <span className="text-xs font-semibold text-amber-700">Email missing</span>
+                    <span className="text-xs font-semibold text-warning">Email missing</span>
                   ) : (
                     <>
                       <div>{p.email}</div>
