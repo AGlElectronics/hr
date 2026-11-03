@@ -3,29 +3,19 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 
 import { getSettings } from '@/api/settings';
-
-/** Lowercase ASCII local part ("Zoë Müller" -> "zoe.muller"). */
-export function suggestLocalPart(first: string, last: string): string {
-  const clean = (s: string) =>
-    s
-      .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .trim()
-      .replace(/\s+/g, '-')
-      .replace(/[^a-z0-9._-]/g, '');
-  return [clean(first), clean(last)].filter(Boolean).join('.');
-}
+import { renderWithFallback } from '@/lib/naming';
 
 /**
- * Organization email: HR types the part before "@"; the domain comes from
- * HR settings. A value on another domain switches to a free-text input.
+ * Organization email: HR types the part before "@"; the domain and the
+ * suggested name template come from settings. A value on another domain
+ * switches to a free-text input.
  */
 export function OrgEmailInput({
   value,
   onChange,
   firstName,
   lastName,
+  nickname,
   invalid,
   className,
 }: {
@@ -33,6 +23,7 @@ export function OrgEmailInput({
   onChange: (v: string) => void;
   firstName: string;
   lastName: string;
+  nickname: string;
   invalid?: boolean;
   className: string;
 }) {
@@ -68,7 +59,7 @@ export function OrgEmailInput({
   }
 
   const local = value ? value.slice(0, value.length - suffix.length) : '';
-  const suggestion = suggestLocalPart(firstName, lastName);
+  const suggestion = renderWithFallback(settings.data?.org_email_template, { first: firstName, last: lastName, nickname });
   const setLocal = (raw: string) => {
     // Typing "@" (or pasting a full address) keeps only the part before it.
     const l = raw.split('@')[0].trim();
@@ -83,7 +74,7 @@ export function OrgEmailInput({
           value={local}
           aria-invalid={invalid}
           aria-label="Organization email name"
-          placeholder={suggestion || 'first.last'}
+          placeholder={suggestion || 'name'}
           onChange={(e) => setLocal(e.target.value)}
           onKeyDown={(e) => {
             if ((e.key === 'Tab' || e.key === 'ArrowRight') && !local && suggestion) {

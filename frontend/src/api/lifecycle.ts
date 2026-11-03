@@ -10,8 +10,8 @@ export type Membership = {
 };
 
 export type AccountState = {
-  /** none: never provisioned · linked · missing: deleted in Keycloak · unreachable: Keycloak could not be asked */
-  state: 'none' | 'linked' | 'missing' | 'unreachable';
+  /** none: never provisioned · linked · missing: gone from Keycloak · deleted: removed by offboarding · unreachable: Keycloak could not be asked */
+  state: 'none' | 'linked' | 'missing' | 'deleted' | 'unreachable';
   username?: string;
   enabled: boolean;
   error?: string;
@@ -35,5 +35,5 @@ export const changePersonAccess = (id: string, draftId: string, roles: RoleRef[]
 export const setPersonStatus = (id: string, status: Extract<PersonStatus, 'active' | 'paused'>) =>
   apiRequest<Person>(`/api/people/${id}/status`, { method: 'POST', body: { status } });
 
-export const offboardPerson = (id: string, body: { reason: string; keep_account?: boolean; hr_only?: boolean }) =>
+export const offboardPerson = (id: string, body: { reason: string; share_reason?: boolean; hr_only?: boolean }) =>
   apiRequest<OffboardResult>(`/api/people/${id}/offboard`, { method: 'POST', body });

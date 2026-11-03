@@ -18,6 +18,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/auth"
 	"github.com/AGlElectronics/hr/backend/internal/catalog"
 	"github.com/AGlElectronics/hr/backend/internal/config"
+	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
 	"github.com/AGlElectronics/hr/backend/internal/service"
 )
@@ -31,6 +32,8 @@ type Deps struct {
 
 	IdP       provisioners.IdPProvisioner
 	Workspace provisioners.WorkspaceProvisioner
+	// Mailer sends HR's own notices; nil when SMTP is not configured.
+	Mailer mail.Sender
 }
 
 // NewRouter wires the chi router with middleware, CORS and routes.
@@ -86,7 +89,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 	accounts, _ := deps.IdP.(provisioners.AccountManager)
 	directory, _ := deps.IdP.(provisioners.Directory)
-	lifecycleSvc := service.NewLifecycleService(deps.Pool, peopleSvc, draftSvc, deptSvc, accounts, auditWriter)
+	lifecycleSvc := service.NewLifecycleService(deps.Pool, peopleSvc, draftSvc, deptSvc, accounts, deps.Mailer, auditWriter)
 	settingsSvc := service.NewSettingsService(deps.Pool, auditWriter)
 	dashSvc := service.NewDashboardService(deps.Pool, peopleSvc, deptSvc)
 	misc := &miscHandler{settings: settingsSvc, dash: dashSvc, directory: directory, depts: deptSvc}

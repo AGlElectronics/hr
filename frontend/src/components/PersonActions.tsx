@@ -163,6 +163,7 @@ function AccountBadge({ account }: { account: AccountState }) {
     none: 'No Keycloak account yet',
     linked: account.enabled ? 'Keycloak login active' : 'Keycloak login disabled',
     missing: 'Keycloak account missing',
+    deleted: 'Keycloak account deleted',
     unreachable: 'Keycloak unreachable',
   }[account.state];
   const tone = account.state === 'missing' || account.state === 'unreachable' || (account.state === 'linked' && !account.enabled)
@@ -231,9 +232,9 @@ function OffboardForm({ personId, memberships, account, onDone, onCancel }: {
   onCancel: () => void;
 }) {
   const [reason, setReason] = useState('');
-  const [keepAccount, setKeepAccount] = useState(false);
+  const [shareReason, setShareReason] = useState(false);
   const mutation = useMutation({
-    mutationFn: (hrOnly: boolean) => offboardPerson(personId, { reason, keep_account: keepAccount, hr_only: hrOnly }),
+    mutationFn: (hrOnly: boolean) => offboardPerson(personId, { reason, share_reason: shareReason, hr_only: hrOnly }),
     onSuccess: (res) => onDone(res.warnings ?? []),
   });
   const hasAccount = account.state === 'linked';
@@ -252,11 +253,16 @@ function OffboardForm({ personId, memberships, account, onDone, onCancel }: {
       }}>
       <p className="font-semibold">Offboard this person</p>
       <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
-        <li>{groups.length ? <>Removes them from {groups.map((g) => <code key={g} className="mr-1 font-mono">{g}</code>)}</> : 'No HR groups to remove'}</li>
-        {hasAccount && <li>{keepAccount ? 'Keeps their Keycloak login enabled' : 'Disables their Keycloak login'}</li>}
+        {hasAccount && (
+          <li>
+            Deletes their Keycloak account{account.username && <> <code className="font-mono">{account.username}</code></>}
+            {groups.length > 0 && <> (and with it {groups.map((g) => <code key={g} className="mr-1 font-mono">{g}</code>)})</>}
+          </li>
+        )}
+        {hasAccount && <li>Emails their private address that the account was deleted</li>}
         {account.state === 'none' && <li>They never got a Keycloak account, so only HR changes</li>}
         {account.state === 'missing' && <li>Their Keycloak account no longer exists, so only HR changes</li>}
-        <li>Keeps their profile and history; you can onboard them again later</li>
+        <li>Keeps their HR profile and history; onboarding them again creates a new account</li>
       </ul>
       <label className="block">
         <span className="mb-1 block font-medium">Reason <span className="text-destructive">*</span></span>
@@ -265,8 +271,8 @@ function OffboardForm({ personId, memberships, account, onDone, onCancel }: {
       </label>
       {hasAccount && (
         <label className="flex items-center gap-2">
-          <input type="checkbox" checked={keepAccount} onChange={(e) => setKeepAccount(e.target.checked)} />
-          Keep their login enabled (only remove groups)
+          <input type="checkbox" checked={shareReason} onChange={(e) => setShareReason(e.target.checked)} />
+          Include the reason in the email
         </label>
       )}
       {mutation.error && <p className="text-destructive">{(mutation.error as Error).message}</p>}
@@ -278,7 +284,7 @@ function OffboardForm({ personId, memberships, account, onDone, onCancel }: {
         {keycloakFailed && (
           <button type="button" disabled={!reason.trim() || mutation.isPending} onClick={() => mutation.mutate(true)}
             className="rounded-pill border border-destructive/40 px-4 py-1.5 text-destructive disabled:opacity-60"
-            title="Mark them offboarded in HR now; remove their groups and disable them in the Keycloak console yourself">
+            title="Mark them offboarded in HR now; delete their account in the Keycloak console yourself">
             Offboard in HR only
           </button>
         )}

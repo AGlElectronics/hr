@@ -15,6 +15,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/db"
 	"github.com/AGlElectronics/hr/backend/internal/domain"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
+	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
 )
 
@@ -26,12 +27,13 @@ type LifecycleService struct {
 	drafts   *DraftService
 	depts    *DepartmentService
 	accounts provisioners.AccountManager // nil when the IdP cannot manage accounts
+	mailer   mail.Sender                 // nil when email is not configured
 	audit    *audit.Writer
 }
 
 // NewLifecycleService wires a LifecycleService.
-func NewLifecycleService(pool *pgxpool.Pool, people *PeopleService, drafts *DraftService, depts *DepartmentService, accounts provisioners.AccountManager, aud *audit.Writer) *LifecycleService {
-	return &LifecycleService{pool: pool, people: people, drafts: drafts, depts: depts, accounts: accounts, audit: aud}
+func NewLifecycleService(pool *pgxpool.Pool, people *PeopleService, drafts *DraftService, depts *DepartmentService, accounts provisioners.AccountManager, mailer mail.Sender, aud *audit.Writer) *LifecycleService {
+	return &LifecycleService{pool: pool, people: people, drafts: drafts, depts: depts, accounts: accounts, mailer: mailer, audit: aud}
 }
 
 // PersonAccess is what a person currently holds through HR.
@@ -46,7 +48,8 @@ type PersonAccess struct {
 // AccountState describes the person's IdP login as HR last saw it.
 type AccountState struct {
 	// State is none (never provisioned), linked, missing (the stored id no
-	// longer exists in the IdP) or unreachable (the IdP could not be asked).
+	// longer exists in the IdP), deleted (removed by offboarding) or
+	// unreachable (the IdP could not be asked).
 	State    string `json:"state"`
 	Username string `json:"username,omitempty"`
 	Enabled  bool   `json:"enabled"`
@@ -109,10 +112,10 @@ type ChangeAccessInput struct {
 // OffboardInput explains why someone leaves.
 type OffboardInput struct {
 	Reason string `json:"reason"`
-	// KeepAccount leaves the IdP login enabled (groups are still removed).
-	KeepAccount bool `json:"keep_account,omitempty"`
+	// ShareReason includes the reason in the email to the person.
+	ShareReason bool `json:"share_reason,omitempty"`
 	// HROnly skips the IdP entirely (e.g. Keycloak is down); HR must then
-	// clean up the account by hand.
+	// delete the account by hand.
 	HROnly bool `json:"hr_only,omitempty"`
 }
 
@@ -147,10 +150,15 @@ func (s *LifecycleService) personDrafts(ctx context.Context, personID uuid.UUID)
 	return out, nil
 }
 
-// externalID is the IdP user id from the person's latest successful IdP job.
 func (s *LifecycleService) externalID(ctx context.Context, personID uuid.UUID) (string, error) {
+	return latestExternalID(ctx, s.pool, personID)
+}
+
+// latestExternalID is the IdP user id from the person's latest successful
+// IdP job ("" when they never had an account).
+func latestExternalID(ctx context.Context, pool *pgxpool.Pool, personID uuid.UUID) (string, error) {
 	var ext string
-	err := s.pool.QueryRow(ctx, `
+	err := pool.QueryRow(ctx, `
 SELECT j.external_id FROM provisioning_jobs j
   JOIN employment_drafts d ON d.id = j.draft_id
  WHERE d.person_id = $1 AND j.target = 'idp' AND j.status = 'succeeded' AND j.external_id IS NOT NULL
@@ -179,6 +187,9 @@ func (s *LifecycleService) Access(ctx context.Context, personID uuid.UUID) (*Per
 		return nil, err
 	}
 	out := &PersonAccess{Person: person, ExternalID: ext, Account: s.accountState(ctx, ext), Onboardings: drafts, Memberships: []Membership{}}
+	if out.Account.State == "missing" && person.Status == domain.PersonOffboarded {
+		out.Account.State = "deleted"
+	}
 	if person.Status == domain.PersonOffboarded {
 		return out, nil
 	}
@@ -303,8 +314,8 @@ INSERT INTO role_plans (id, draft_id, role_name, group_name, scope) VALUES ($1, 
 	return s.Access(ctx, personID)
 }
 
-// SyncProfile pushes name and email changes to the person's IdP account,
-// if they have one.
+// SyncProfile pushes name, email and profile attributes to the person's IdP
+// account, if they have one.
 func (s *LifecycleService) SyncProfile(ctx context.Context, p *domain.Person) error {
 	if s.accounts == nil || p.EmailMissing || p.Status == domain.PersonOffboarded {
 		return nil
@@ -313,12 +324,14 @@ func (s *LifecycleService) SyncProfile(ctx context.Context, p *domain.Person) er
 	if err != nil || ext == "" {
 		return err
 	}
-	err = s.accounts.UpdateProfile(ctx, ext, p.Email, p.FirstName, p.LastName)
+	err = s.accounts.UpdateProfile(ctx, ext, provisioners.Profile{
+		Email: p.Email, FirstName: p.FirstName, LastName: p.LastName, Attributes: personAttributes(p),
+	})
 	if errors.Is(err, provisioners.ErrAccountNotFound) {
 		return errors.New("their Keycloak account no longer exists, so only HR was updated")
 	}
 	if err != nil {
-		return idpFailure("update their name and email", err)
+		return idpFailure("update their profile", err)
 	}
 	return nil
 }
@@ -346,9 +359,9 @@ func (s *LifecycleService) SetStatus(ctx context.Context, actor string, personID
 	return s.people.Get(ctx, personID)
 }
 
-// Offboard removes everything HR granted: the person leaves all department
-// and role groups, their login is disabled (unless KeepAccount), and their
-// status becomes offboarded. Their profile and history are kept.
+// Offboard deletes the person's IdP account, emails them that it was
+// deleted, and sets their status to offboarded. Their HR profile and history
+// are kept, so they can be onboarded again (with a new account).
 func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID uuid.UUID, in OffboardInput) (*OffboardResult, error) {
 	in.Reason = strings.TrimSpace(in.Reason)
 	if in.Reason == "" {
@@ -366,32 +379,36 @@ func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID 
 		groups = append(groups, g)
 	}
 	warnings := []string{}
-	disabled := false
+	deleted := false
 	switch {
 	case in.HROnly && (acc.Account.State == "linked" || acc.Account.State == "unreachable"):
-		warnings = append(warnings, "Keycloak was skipped: remove their groups and disable their login in the Keycloak console.")
+		warnings = append(warnings, "Keycloak was skipped: delete their account in the Keycloak console.")
 	case acc.Account.State == "unreachable":
-		return nil, httperror.New(httperror.CodeUpstream, acc.Account.Error+" You can also offboard in HR only and clean up Keycloak by hand.")
+		return nil, httperror.New(httperror.CodeUpstream, acc.Account.Error+" You can also offboard in HR only and delete the account in Keycloak by hand.")
 	case acc.Account.State == "missing":
-		warnings = append(warnings, "Their Keycloak account no longer exists, so there was nothing to disable.")
+		warnings = append(warnings, "Their Keycloak account no longer exists, so there was nothing to delete.")
 	case acc.Account.State == "linked" && s.accounts != nil:
-		if err := s.accounts.UpdateMembership(ctx, acc.ExternalID, nil, groups); err != nil && !errors.Is(err, provisioners.ErrAccountNotFound) {
-			return nil, idpFailure("remove their groups", err)
+		err := s.accounts.DeleteAccount(ctx, acc.ExternalID)
+		if err != nil && !errors.Is(err, provisioners.ErrAccountNotFound) {
+			return nil, idpFailure("delete their account", err)
 		}
-		if !in.KeepAccount {
-			if err := s.accounts.SetEnabled(ctx, acc.ExternalID, false); err != nil && !errors.Is(err, provisioners.ErrAccountNotFound) {
-				return nil, idpFailure("disable their login (groups were already removed)", err)
-			}
-			disabled = true
-		}
+		deleted = err == nil
 	}
 	if _, err := s.pool.Exec(ctx, `
 UPDATE people SET status = 'offboarded', offboarded_at = now(), offboard_reason = $2, updated_at = now() WHERE id = $1`,
 		personID, in.Reason); err != nil {
 		return nil, httperror.Internal(err)
 	}
+	notified := false
+	if deleted {
+		if err := s.sendDeletedNotice(ctx, acc.Person, in); err != nil {
+			warnings = append(warnings, "Their account was deleted, but HR could not email them: "+err.Error())
+		} else {
+			notified = true
+		}
+	}
 	if err := s.audit.Record(ctx, actor, "person.offboard", "person", personID, map[string]any{
-		"reason": in.Reason, "removed_groups": groups, "account_disabled": disabled,
+		"reason": in.Reason, "groups": groups, "account_deleted": deleted, "notified": notified,
 		"account_state": acc.Account.State, "hr_only": in.HROnly, "warnings": warnings,
 	}); err != nil {
 		return nil, err
@@ -401,4 +418,44 @@ UPDATE people SET status = 'offboarded', offboarded_at = now(), offboard_reason 
 		return nil, err
 	}
 	return &OffboardResult{Person: p, Warnings: warnings}, nil
+}
+
+// sendDeletedNotice tells the person (at their private email) that their
+// account was offboarded and deleted.
+func (s *LifecycleService) sendDeletedNotice(ctx context.Context, p *domain.Person, in OffboardInput) error {
+	if s.mailer == nil {
+		return mail.ErrNotConfigured
+	}
+	if p.EmailMissing || strings.TrimSpace(p.Email) == "" {
+		return errors.New("they have no private email on file")
+	}
+	settings, err := (&SettingsService{pool: s.pool}).Get(ctx)
+	if err != nil {
+		return err
+	}
+	return s.mailer.Send(ctx, DeletedNotice(settings.OrganizationName, p, in))
+}
+
+// DeletedNotice is the "your account was deleted" email.
+func DeletedNotice(org string, p *domain.Person, in OffboardInput) mail.Message {
+	name := firstNonEmpty(p.Nickname, p.FirstName, p.DisplayName)
+	where := "our volunteer services"
+	subject := "Your volunteer account has been deleted"
+	if org = strings.TrimSpace(org); org != "" {
+		where = org
+		subject = "Your " + org + " account has been deleted"
+	}
+	var b strings.Builder
+	if name != "" {
+		b.WriteString("Hi " + name + ",\n\n")
+	} else {
+		b.WriteString("Hi,\n\n")
+	}
+	b.WriteString("You have been offboarded from " + where + ", so your account has been deleted.\n")
+	b.WriteString("You can no longer sign in with it.\n")
+	if in.ShareReason && strings.TrimSpace(in.Reason) != "" {
+		b.WriteString("\nReason: " + strings.TrimSpace(in.Reason) + "\n")
+	}
+	b.WriteString("\nIf you think this is a mistake, please reply to this email or contact the team.\n\nThank you for your help!\n")
+	return mail.Message{To: p.Email, Subject: subject, Body: b.String()}
 }

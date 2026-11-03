@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -111,18 +112,34 @@ func (s *ProvisionService) runIdPWith(ctx context.Context, draft *domain.Employm
 		}
 	}
 
+	settings, err := (&SettingsService{pool: s.pool}).Get(ctx)
+	if err != nil {
+		s.finishJob(ctx, &job, domain.JobStatusFailed, err.Error(), "")
+		return job, provisioners.IdPResult{}, err
+	}
+	ext, err := latestExternalID(ctx, s.pool, person.ID)
+	if err != nil {
+		s.finishJob(ctx, &job, domain.JobStatusFailed, err.Error(), "")
+		return job, provisioners.IdPResult{}, err
+	}
 	res, err := s.idp.Provision(ctx, provisioners.IdPUser{
 		HRPersonID:  person.ID,
-		Username:    firstNonEmpty(person.Email, person.DisplayName),
+		ExternalID:  ext,
+		Username:    UsernameFor(settings.UsernameTemplate, person),
 		DisplayName: person.DisplayName,
 		FirstName:   person.FirstName,
 		LastName:    person.LastName,
 		Email:       person.Email,
+		Attributes:  personAttributes(person),
 		Groups:      groups,
 
 		SendPasswordSetup: passwordSetup,
 	})
 	if err != nil {
+		var taken *provisioners.UsernameTakenError
+		if errors.As(err, &taken) {
+			err = fmt.Errorf("%w; change their nickname (or the username template in Settings) and try again", err)
+		}
 		s.finishJob(ctx, &job, domain.JobStatusFailed, err.Error(), "")
 		return job, res, err
 	}

@@ -1,6 +1,11 @@
 import { apiRequest } from './client';
 
-export type Settings = { org_email_domain: string };
+export type Settings = {
+  organization_name: string;
+  org_email_domain: string;
+  username_template: string;
+  org_email_template: string;
+};
 
 export const getSettings = () => apiRequest<Settings>('/api/settings');
 

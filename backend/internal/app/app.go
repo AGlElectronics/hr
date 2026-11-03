@@ -23,6 +23,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/db"
 	httpx "github.com/AGlElectronics/hr/backend/internal/http"
+	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
 )
 
@@ -95,6 +96,17 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			Msg("object storage configured (LOCAL DEV ONLY; MinIO must never be used in production)")
 	}
 
+	var mailer mail.Sender
+	if m := mail.NewSMTP(mail.SMTPConfig{
+		Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
+		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName,
+	}); m != nil {
+		mailer = m
+		logger.Info().Str("host", cfg.SMTPHost).Msg("smtp mailer ready")
+	} else {
+		logger.Warn().Msg("SMTP_HOST not set — HR cannot email offboarding notices")
+	}
+
 	router := httpx.NewRouter(httpx.Deps{
 		Config:       cfg,
 		Pool:         pool,
@@ -102,6 +114,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		OIDCVerifier: oidcVerifier,
 		IdP:          idp,
 		Workspace:    ws,
+		Mailer:       mailer,
 	}, Version)
 
 	server := &nethttp.Server{

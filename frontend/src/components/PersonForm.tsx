@@ -1,6 +1,9 @@
 import { useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { ApiError } from '@/api/client';
+import { getSettings } from '@/api/settings';
+import { DEFAULT_USERNAME_TEMPLATE, renderWithFallback } from '@/lib/naming';
 import {
   PERSON_STATUSES,
   SOCIAL_NETWORKS,
@@ -69,6 +72,12 @@ export function PersonForm({
 }: Props) {
   const [v, setV] = useState<PersonInput>(() => fromPerson(initial));
   const errs = fieldErrors(error);
+  const settings = useQuery({ queryKey: ['settings'], queryFn: getSettings, staleTime: 60_000 });
+  const username = initial || !settings.data
+    ? ''
+    : renderWithFallback(settings.data.username_template || DEFAULT_USERNAME_TEMPLATE, {
+        first: v.first_name, last: v.last_name, nickname: v.nickname ?? '',
+      });
   const set = <K extends keyof PersonInput>(k: K, val: PersonInput[K]) => setV((s) => ({ ...s, [k]: val }));
   const setSocial = (k: string, val: string) =>
     setV((s) => ({ ...s, social_handles: { ...s.social_handles, [k]: val } }));
@@ -99,7 +108,8 @@ export function PersonForm({
           <input className={inputCls} required value={v.last_name} aria-invalid={!!errs.last_name}
             onChange={(e) => set('last_name', e.target.value)} autoComplete="family-name" />
         </Field>
-        <Field label="Nickname" required hint="Shown instead of the legal name where possible" error={errs.nickname}>
+        <Field label="Nickname" required error={errs.nickname}
+          hint={username ? `Login name for a new account: ${username}` : 'Shown instead of the legal name where possible'}>
           <input className={inputCls} required value={v.nickname} aria-invalid={!!errs.nickname}
             onChange={(e) => set('nickname', e.target.value)} />
         </Field>
@@ -132,14 +142,14 @@ export function PersonForm({
         )}
       </Section>
 
-      <Section title="Contact" hint="The private email is their login username and where account credentials are sent.">
+      <Section title="Contact" hint="Account emails (setting a password, offboarding notices) go to the private email.">
         <Field label="Private email" required error={errs.email}>
           <input className={inputCls} type="email" required value={v.email} aria-invalid={!!errs.email}
             onChange={(e) => set('email', e.target.value)} autoComplete="email" placeholder="name@example.com" />
         </Field>
         <Field label="Organization email" hint="Workspace address; type the name, the domain is added" error={errs.org_email}>
           <OrgEmailInput className={inputCls} value={v.org_email ?? ''} invalid={!!errs.org_email}
-            onChange={(val) => set('org_email', val)} firstName={v.first_name} lastName={v.last_name} />
+            onChange={(val) => set('org_email', val)} firstName={v.first_name} lastName={v.last_name} nickname={v.nickname ?? ''} />
         </Field>
         <Field label="Phone" required error={errs.phone}>
           <input className={inputCls} type="tel" required value={v.phone} aria-invalid={!!errs.phone}

@@ -19,13 +19,20 @@ import (
 
 // IdPUser is the minimal shape HR hands to the identity provider.
 type IdPUser struct {
-	HRPersonID  uuid.UUID
+	HRPersonID uuid.UUID
+	// ExternalID is the account HR already linked to this person. When it
+	// still exists it is updated in place (its username is never changed);
+	// otherwise a new account is created with Username.
+	ExternalID  string
 	Username    string
 	DisplayName string
 	FirstName   string
 	LastName    string
 	Email       string
-	Groups      []string
+	// Attributes are extra profile fields (nickname, phone, …). Empty values
+	// remove the attribute.
+	Attributes map[string]string
+	Groups     []string
 	// SendPasswordSetup asks the IdP to email a brand-new user a link to set
 	// their own password instead of HR handing out a temporary one.
 	SendPasswordSetup bool
@@ -82,10 +89,26 @@ type Directory interface {
 // in the IdP, or created by a different/fake IdP).
 var ErrAccountNotFound = errors.New("account not found in the identity provider")
 
+// UsernameTakenError means a new account would reuse a username that
+// belongs to someone else in the IdP.
+type UsernameTakenError struct{ Username string }
+
+func (e *UsernameTakenError) Error() string {
+	return fmt.Sprintf("the username %q is already used by another account", e.Username)
+}
+
 // AccountInfo is the login state of an IdP user.
 type AccountInfo struct {
 	Username string `json:"username"`
 	Enabled  bool   `json:"enabled"`
+}
+
+// Profile is what HR keeps in sync on an existing account.
+type Profile struct {
+	Email      string
+	FirstName  string
+	LastName   string
+	Attributes map[string]string
 }
 
 // AccountManager changes an existing IdP account after onboarding
@@ -95,7 +118,8 @@ type AccountManager interface {
 	GetAccount(ctx context.Context, userID string) (*AccountInfo, error)
 	UpdateMembership(ctx context.Context, userID string, add, remove []string) error
 	SetEnabled(ctx context.Context, userID string, enabled bool) error
-	UpdateProfile(ctx context.Context, userID, email, firstName, lastName string) error
+	UpdateProfile(ctx context.Context, userID string, p Profile) error
+	DeleteAccount(ctx context.Context, userID string) error
 }
 
 // IdPProvisioner is the connector the HR service calls. FakeIdP is used in
@@ -202,8 +226,17 @@ func (f *FakeIdP) SetEnabled(_ context.Context, userID string, enabled bool) err
 }
 
 // UpdateProfile logs the profile change.
-func (f *FakeIdP) UpdateProfile(_ context.Context, userID, email, _, _ string) error {
-	f.logger.Info().Str("user", userID).Str("email", email).Msg("fake idp update profile")
+func (f *FakeIdP) UpdateProfile(_ context.Context, userID string, p Profile) error {
+	f.logger.Info().Str("user", userID).Str("email", p.Email).Msg("fake idp update profile")
+	return nil
+}
+
+// DeleteAccount logs the deletion.
+func (f *FakeIdP) DeleteAccount(_ context.Context, userID string) error {
+	if !strings.HasPrefix(userID, "idp:") {
+		return ErrAccountNotFound
+	}
+	f.logger.Info().Str("user", userID).Msg("fake idp delete account")
 	return nil
 }
 

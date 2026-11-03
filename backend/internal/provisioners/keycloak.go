@@ -26,9 +26,6 @@ type KeycloakConfig struct {
 	// roles to manage users (hr-provisioner).
 	ClientID     string
 	ClientSecret string
-	// BootstrapGroups are applied when the target user is the first
-	// non-service-account human and no den-admin members exist yet.
-	BootstrapGroups []string
 	// SetupClientID / SetupRedirectURI are where the set-password email link
 	// lands the user afterwards (normally the portal, e.g. den-spa).
 	SetupClientID    string
@@ -58,9 +55,6 @@ func NewKeycloakIdP(cfg KeycloakConfig, logger zerolog.Logger) (*KeycloakIdP, er
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 20 * time.Second}
-	}
-	if len(cfg.BootstrapGroups) == 0 {
-		cfg.BootstrapGroups = []string{"den-admin", "hr-admin"}
 	}
 	if cfg.SetupLinkLifespan <= 0 {
 		cfg.SetupLinkLifespan = 72 * time.Hour
@@ -118,48 +112,43 @@ func (k *KeycloakIdP) provisionOnce(ctx context.Context, u IdPUser) (IdPResult, 
 		return IdPResult{}, err
 	}
 
-	existingID, err := k.findUserID(ctx, token, username)
-	if err != nil {
-		return IdPResult{}, err
-	}
-
 	first, last := u.FirstName, u.LastName
 	if first == "" && last == "" {
 		first, last = splitDisplayName(u.DisplayName)
 	}
-	payload := map[string]any{
-		"username":      username,
-		"enabled":       true,
-		"emailVerified": true,
-		"email":         u.Email,
-		"firstName":     first,
-		"lastName":      last,
-		"attributes": map[string][]string{
-			"hrPersonId": {u.HRPersonID.String()},
-		},
+	attrs := map[string]string{}
+	for key, v := range u.Attributes {
+		attrs[key] = v
 	}
+	attrs[AttrHRPersonID] = u.HRPersonID.String()
 
-	var userID string
+	userID, err := k.linkedOrOwnedUser(ctx, token, u, username)
+	if err != nil {
+		return IdPResult{}, err
+	}
 	created := false
-	if existingID == "" {
-		userID, err = k.createUser(ctx, token, payload)
+	if userID == "" {
+		userID, err = k.createUser(ctx, token, map[string]any{
+			"username":      username,
+			"enabled":       true,
+			"emailVerified": true,
+			"email":         u.Email,
+			"firstName":     first,
+			"lastName":      last,
+			"attributes":    attrValues(attrs),
+		})
 		if err != nil {
 			return IdPResult{}, err
 		}
 		created = true
 	} else {
-		userID = existingID
-		if err := k.updateUser(ctx, token, userID, payload); err != nil {
+		changes := map[string]any{"enabled": true, "email": u.Email, "firstName": first, "lastName": last}
+		if err := k.patchUserOnce(ctx, token, userID, changes, attrs); err != nil {
 			return IdPResult{}, err
 		}
 	}
 
-	groups := append([]string(nil), u.Groups...)
-	bootstrapped, err := k.maybeBootstrapGroups(ctx, token, &groups)
-	if err != nil {
-		return IdPResult{}, err
-	}
-	applied, err := k.syncGroups(ctx, token, userID, groups)
+	applied, err := k.syncGroups(ctx, token, userID, u.Groups)
 	if err != nil {
 		return IdPResult{}, err
 	}
@@ -188,11 +177,80 @@ func (k *KeycloakIdP) provisionOnce(ctx context.Context, u IdPUser) (IdPResult, 
 		Str("username", username).
 		Str("user_id", userID).
 		Bool("created", created).
-		Bool("bootstrapped", bootstrapped).
 		Bool("setup_email_sent", res.PasswordSetupEmailSent).
 		Strs("groups", applied).
 		Msg("keycloak idp provision")
 	return res, nil
+}
+
+// Keycloak user attributes HR writes. They must be declared in the realm's
+// user profile (see infra/keycloak/apply-mvp.sh), or Keycloak drops them.
+const (
+	AttrHRPersonID   = "hrPersonId"
+	AttrNickname     = "nickname"
+	AttrPhone        = "phone"
+	AttrOrgEmail     = "orgEmail"
+	AttrPrivateEmail = "privateEmail"
+)
+
+// linkedOrOwnedUser returns the account to update: the linked ExternalID if
+// it still exists, else an account with the username that belongs to this
+// person. "" means create a new one. A username owned by someone else is a
+// *UsernameTakenError.
+func (k *KeycloakIdP) linkedOrOwnedUser(ctx context.Context, token string, u IdPUser, username string) (string, error) {
+	if u.ExternalID != "" {
+		err := k.adminJSON(ctx, token, http.MethodGet, "/users/"+url.PathEscape(u.ExternalID), nil, nil)
+		if err == nil {
+			return u.ExternalID, nil
+		}
+		if !errors.Is(asAccountError(err), ErrAccountNotFound) {
+			return "", err
+		}
+	}
+	existingID, err := k.findUserID(ctx, token, username)
+	if err != nil || existingID == "" {
+		return "", err
+	}
+	var rep struct {
+		Email      string              `json:"email"`
+		Attributes map[string][]string `json:"attributes"`
+	}
+	if err := k.adminJSON(ctx, token, http.MethodGet, "/users/"+url.PathEscape(existingID), nil, &rep); err != nil {
+		return "", err
+	}
+	owner := ""
+	if v := rep.Attributes[AttrHRPersonID]; len(v) > 0 {
+		owner = v[0]
+	}
+	switch {
+	case owner == u.HRPersonID.String():
+		return existingID, nil
+	case owner == "" && rep.Email != "" && strings.EqualFold(rep.Email, u.Email):
+		return existingID, nil
+	default:
+		return "", &UsernameTakenError{Username: username}
+	}
+}
+
+func attrValues(attrs map[string]string) map[string][]string {
+	out := map[string][]string{}
+	for key, v := range attrs {
+		if v = strings.TrimSpace(v); v != "" {
+			out[key] = []string{v}
+		}
+	}
+	return out
+}
+
+// DeleteAccount removes the user from the IdP.
+func (k *KeycloakIdP) DeleteAccount(ctx context.Context, userID string) error {
+	return k.withFreshTokenRetry(func() error {
+		token, err := k.accessToken(ctx)
+		if err != nil {
+			return err
+		}
+		return asAccountError(k.adminJSON(ctx, token, http.MethodDelete, "/users/"+url.PathEscape(userID), nil, nil))
+	})
 }
 
 // sendPasswordSetup has Keycloak email the user a link to set their password
@@ -337,31 +395,51 @@ func asAccountError(err error) error {
 
 // SetEnabled enables or disables login for the user.
 func (k *KeycloakIdP) SetEnabled(ctx context.Context, userID string, enabled bool) error {
-	return k.patchUser(ctx, userID, map[string]any{"enabled": enabled})
+	return k.patchUser(ctx, userID, map[string]any{"enabled": enabled}, nil)
 }
 
-// UpdateProfile syncs email and names (the username is left unchanged).
-func (k *KeycloakIdP) UpdateProfile(ctx context.Context, userID, email, firstName, lastName string) error {
-	return k.patchUser(ctx, userID, map[string]any{"email": email, "firstName": firstName, "lastName": lastName})
+// UpdateProfile syncs email, names and attributes (the username is left
+// unchanged).
+func (k *KeycloakIdP) UpdateProfile(ctx context.Context, userID string, p Profile) error {
+	return k.patchUser(ctx, userID, map[string]any{"email": p.Email, "firstName": p.FirstName, "lastName": p.LastName}, p.Attributes)
 }
 
-// patchUser round-trips the full representation: user-profile validation
-// rejects partial updates that omit required attributes.
-func (k *KeycloakIdP) patchUser(ctx context.Context, userID string, changes map[string]any) error {
+func (k *KeycloakIdP) patchUser(ctx context.Context, userID string, changes map[string]any, attrs map[string]string) error {
 	return k.withFreshTokenRetry(func() error {
 		token, err := k.accessToken(ctx)
 		if err != nil {
 			return err
 		}
-		var rep map[string]any
-		if err := k.adminJSON(ctx, token, http.MethodGet, "/users/"+url.PathEscape(userID), nil, &rep); err != nil {
-			return asAccountError(err)
-		}
-		for key, v := range changes {
-			rep[key] = v
-		}
-		return k.adminJSON(ctx, token, http.MethodPut, "/users/"+url.PathEscape(userID), rep, nil)
+		return k.patchUserOnce(ctx, token, userID, changes, attrs)
 	})
+}
+
+// patchUserOnce round-trips the full representation: user-profile
+// validation rejects partial updates that omit required attributes. attrs
+// are merged into the existing attributes; empty values remove them.
+func (k *KeycloakIdP) patchUserOnce(ctx context.Context, token, userID string, changes map[string]any, attrs map[string]string) error {
+	var rep map[string]any
+	if err := k.adminJSON(ctx, token, http.MethodGet, "/users/"+url.PathEscape(userID), nil, &rep); err != nil {
+		return asAccountError(err)
+	}
+	for key, v := range changes {
+		rep[key] = v
+	}
+	if len(attrs) > 0 {
+		merged, _ := rep["attributes"].(map[string]any)
+		if merged == nil {
+			merged = map[string]any{}
+		}
+		for key, v := range attrs {
+			if v = strings.TrimSpace(v); v == "" {
+				delete(merged, key)
+			} else {
+				merged[key] = []string{v}
+			}
+		}
+		rep["attributes"] = merged
+	}
+	return k.adminJSON(ctx, token, http.MethodPut, "/users/"+url.PathEscape(userID), rep, nil)
 }
 
 func (k *KeycloakIdP) ensureGroupsOnce(ctx context.Context, names []string) error {
@@ -381,28 +459,6 @@ func (k *KeycloakIdP) ensureGroupsOnce(ctx context.Context, names []string) erro
 		}
 	}
 	return nil
-}
-
-func (k *KeycloakIdP) maybeBootstrapGroups(ctx context.Context, token string, groups *[]string) (bool, error) {
-	hasDenAdmin := false
-	for _, g := range *groups {
-		if g == "den-admin" {
-			hasDenAdmin = true
-			break
-		}
-	}
-	if hasDenAdmin {
-		return false, nil
-	}
-	count, err := k.countGroupMembers(ctx, token, "den-admin")
-	if err != nil {
-		return false, err
-	}
-	if count > 0 {
-		return false, nil
-	}
-	*groups = mergeUniqueStrings(*groups, k.cfg.BootstrapGroups)
-	return true, nil
 }
 
 func (k *KeycloakIdP) accessToken(ctx context.Context) (string, error) {
@@ -483,10 +539,6 @@ func (k *KeycloakIdP) createUser(ctx context.Context, token string, payload map[
 	}
 	parts := strings.Split(strings.TrimRight(loc, "/"), "/")
 	return parts[len(parts)-1], nil
-}
-
-func (k *KeycloakIdP) updateUser(ctx context.Context, token, id string, payload map[string]any) error {
-	return k.adminJSON(ctx, token, http.MethodPut, "/users/"+url.PathEscape(id), payload, nil)
 }
 
 func (k *KeycloakIdP) setTemporaryPassword(ctx context.Context, token, userID, password string) error {
@@ -578,21 +630,6 @@ func (k *KeycloakIdP) createGroup(ctx context.Context, token, name string) (stri
 		return "", fmt.Errorf("keycloak group %q could not be created", name)
 	}
 	return id, nil
-}
-
-func (k *KeycloakIdP) countGroupMembers(ctx context.Context, token, groupName string) (int, error) {
-	gid, err := k.groupID(ctx, token, groupName)
-	if err != nil {
-		return 0, err
-	}
-	if gid == "" {
-		return 0, nil
-	}
-	var members []json.RawMessage
-	if err := k.adminJSON(ctx, token, http.MethodGet, "/groups/"+url.PathEscape(gid)+"/members?max=5", nil, &members); err != nil {
-		return 0, err
-	}
-	return len(members), nil
 }
 
 func (k *KeycloakIdP) adminJSON(ctx context.Context, token, method, path string, payload any, dest any) error {

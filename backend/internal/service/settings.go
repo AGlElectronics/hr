@@ -14,8 +14,14 @@ import (
 
 // Settings are HR-wide configuration values editable in the UI.
 type Settings struct {
+	// OrganizationName is used in emails HR sends ("… at <name>").
+	OrganizationName string `json:"organization_name"`
 	// OrgEmailDomain is appended to organization emails ("name" -> "name@domain").
 	OrgEmailDomain string `json:"org_email_domain"`
+	// UsernameTemplate builds the login name of new accounts, e.g. "{nickname}".
+	UsernameTemplate string `json:"username_template"`
+	// OrgEmailTemplate suggests the part before "@", e.g. "{first}.{last}".
+	OrgEmailTemplate string `json:"org_email_template"`
 }
 
 // SettingsService stores Settings as key/value rows.
@@ -31,39 +37,76 @@ func NewSettingsService(pool *pgxpool.Pool, aud *audit.Writer) *SettingsService 
 
 var domainRE = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$`)
 
-// Get returns the current settings (empty values when unset).
+// Get returns the current settings; unset templates get their defaults.
 func (s *SettingsService) Get(ctx context.Context) (*Settings, error) {
 	rows, err := s.pool.Query(ctx, `SELECT key, value FROM settings`)
 	if err != nil {
 		return nil, httperror.Internal(err)
 	}
 	defer rows.Close()
-	out := &Settings{}
+	out := &Settings{UsernameTemplate: DefaultUsernameTemplate, OrgEmailTemplate: DefaultOrgEmailTemplate}
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err != nil {
 			return nil, httperror.Internal(err)
 		}
-		if k == "org_email_domain" {
+		switch k {
+		case "organization_name":
+			out.OrganizationName = v
+		case "org_email_domain":
 			out.OrgEmailDomain = v
+		case "username_template":
+			if v != "" {
+				out.UsernameTemplate = v
+			}
+		case "org_email_template":
+			if v != "" {
+				out.OrgEmailTemplate = v
+			}
 		}
 	}
 	return out, rows.Err()
 }
 
+// Normalize trims and validates settings, returning per-field errors.
+func (in *Settings) Normalize() map[string]string {
+	in.OrganizationName = strings.TrimSpace(in.OrganizationName)
+	in.OrgEmailDomain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(in.OrgEmailDomain), "@"))
+	in.UsernameTemplate = strings.TrimSpace(in.UsernameTemplate)
+	in.OrgEmailTemplate = strings.TrimSpace(in.OrgEmailTemplate)
+	fields := map[string]string{}
+	if in.OrgEmailDomain != "" && !domainRE.MatchString(in.OrgEmailDomain) {
+		fields["org_email_domain"] = "must be a domain like example.org"
+	}
+	if msg := ValidateTemplate(in.UsernameTemplate); msg != "" {
+		fields["username_template"] = msg
+	}
+	if msg := ValidateTemplate(in.OrgEmailTemplate); msg != "" {
+		fields["org_email_template"] = msg
+	}
+	return fields
+}
+
 // Update validates and stores the settings.
 func (s *SettingsService) Update(ctx context.Context, actor string, in Settings) (*Settings, error) {
-	in.OrgEmailDomain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(in.OrgEmailDomain), "@"))
-	if in.OrgEmailDomain != "" && !domainRE.MatchString(in.OrgEmailDomain) {
-		return nil, httperror.Validation("validation failed", map[string]string{"org_email_domain": "must be a domain like example.org"})
+	if fields := in.Normalize(); len(fields) > 0 {
+		return nil, httperror.Validation("validation failed", fields)
 	}
-	if _, err := s.pool.Exec(ctx, `
-INSERT INTO settings (key, value, updated_at) VALUES ('org_email_domain', $1, now())
-ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, in.OrgEmailDomain); err != nil {
-		return nil, httperror.Internal(err)
+	values := map[string]string{
+		"organization_name":  in.OrganizationName,
+		"org_email_domain":   in.OrgEmailDomain,
+		"username_template":  in.UsernameTemplate,
+		"org_email_template": in.OrgEmailTemplate,
+	}
+	for k, v := range values {
+		if _, err := s.pool.Exec(ctx, `
+INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, now())
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, k, v); err != nil {
+			return nil, httperror.Internal(err)
+		}
 	}
 	if err := s.audit.Record(ctx, actor, "settings.update", "settings", uuid.Nil, map[string]any{
-		"org_email_domain": in.OrgEmailDomain,
+		"organization_name": in.OrganizationName, "org_email_domain": in.OrgEmailDomain, "username_template": in.UsernameTemplate, "org_email_template": in.OrgEmailTemplate,
 	}); err != nil {
 		return nil, err
 	}

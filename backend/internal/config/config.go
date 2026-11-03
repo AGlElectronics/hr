@@ -53,6 +53,15 @@ type Config struct {
 	// RoleCatalogSources: "stash=http://…/api/role-catalog,events=…".
 	RoleCatalogSources string
 
+	// SMTP for HR's own notices (e.g. "your account was deleted"). Empty
+	// host disables them; HR then shows a warning instead.
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string
+	SMTPFromName string
+
 	CORSAllowedOrigins []string
 
 	ShutdownTimeout time.Duration
@@ -85,6 +94,12 @@ func Load() (*Config, error) {
 		KeycloakSetupClientID:    getEnv("KEYCLOAK_SETUP_CLIENT_ID", ""),
 		KeycloakSetupRedirectURI: getEnv("KEYCLOAK_SETUP_REDIRECT_URI", ""),
 		RoleCatalogSources:       getEnv("ROLE_CATALOG_SOURCES", ""),
+		SMTPHost:                 getEnv("SMTP_HOST", ""),
+		SMTPPort:                 getEnvInt("SMTP_PORT", 587),
+		SMTPUsername:             getEnv("SMTP_USERNAME", ""),
+		SMTPPassword:             getEnv("SMTP_PASSWORD", ""),
+		SMTPFrom:                 getEnv("SMTP_FROM", ""),
+		SMTPFromName:             getEnv("SMTP_FROM_NAME", ""),
 		CORSAllowedOrigins:       splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3003")),
 		ShutdownTimeout:          getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 	}
@@ -169,6 +184,14 @@ func getEnvBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
+}
+
+func getEnvInt(key string, fallback int) int {
+	v, err := strconv.Atoi(os.Getenv(key))
+	if err != nil {
+		return fallback
+	}
+	return v
 }
 
 func getEnvDuration(key string, fallback time.Duration) time.Duration {
