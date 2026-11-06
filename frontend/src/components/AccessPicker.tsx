@@ -11,6 +11,7 @@ import {
 
 import { getAccessCatalog, roleRef, type CatalogModule, type CatalogRole } from '@/api/catalog';
 import type { RoleRef } from '@/api/departments';
+import { useDebugMode } from '@/lib/debug';
 import { cn } from '@/lib/utils';
 
 type Selection = Record<string, Set<string>>; // module -> role keys
@@ -46,6 +47,7 @@ export function AccessPicker({
   subject?: string;
 }) {
   const catalog = useQuery({ queryKey: ['access-catalog'], queryFn: getAccessCatalog });
+  const debug = useDebugMode();
   const [selection, setSelection] = useState<Selection>(() => selectionFromPlan(plan));
   const [enabled, setEnabled] = useState<Set<string>>(
     () => new Set(Object.keys(selectionFromPlan(plan))),
@@ -114,12 +116,7 @@ export function AccessPicker({
             <KeyRound className="w-4 h-4 text-primary" /> Access
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {intro ?? (
-              <>
-                Pick the modules {subject.toLowerCase()} needs, then choose from the roles each module
-                publishes. Roles are fetched live from every module&apos;s <code>/api/role-catalog</code>.
-              </>
-            )}
+            {intro ?? <>Switch on the modules {subject.toLowerCase()} needs, then tick what they should be able to do.</>}
           </p>
         </div>
         <button
@@ -131,7 +128,7 @@ export function AccessPicker({
         </button>
       </header>
 
-      {catalog.isLoading && <p className="p-4 text-sm text-muted-foreground">Fetching role catalogs…</p>}
+      {catalog.isLoading && <p className="p-4 text-sm text-muted-foreground">Loading access options…</p>}
       {catalog.error && (
         <p className="p-4 text-sm text-destructive">{(catalog.error as Error).message}</p>
       )}
@@ -171,8 +168,9 @@ export function AccessPicker({
                   </span>
                   <span className="block text-xs text-muted-foreground">
                     {mod.status === 'ok'
-                      ? `${mod.description || mod.module} · ${mod.roles.length} role${mod.roles.length === 1 ? '' : 's'}`
-                      : `Catalog unavailable: ${mod.error}`}
+                      ? mod.description || mod.display_name
+                      : `Can't reach ${mod.display_name} right now${debug && mod.error ? `: ${mod.error}` : ''}`}
+                    {debug && <span className="ml-1 font-mono">· {mod.module} · {mod.source}</span>}
                   </span>
                 </span>
                 {mod.status !== 'ok' ? (
@@ -195,6 +193,7 @@ export function AccessPicker({
                       role={role}
                       selected={selection[mod.module]?.has(role.key) ?? false}
                       fromDefault={defaultSet.has(roleRef(mod.module, role.key))}
+                      debug={debug}
                       disabled={!editable || !role.assignable}
                       onToggle={() => toggleRole(mod.module, role.key)}
                     />
@@ -219,7 +218,7 @@ export function AccessPicker({
                   <span
                     key={ref}
                     className="rounded-pill border border-border bg-muted px-2 py-0.5 text-xs"
-                    title={hit?.role.group ? `Keycloak group: ${hit.role.group}` : undefined}
+                    title={debug && hit?.role.group ? `group ${hit.role.group}` : undefined}
                   >
                     <strong>{hit?.mod.display_name ?? ref.split(':')[0]}</strong> ·{' '}
                     {hit?.role.label ?? ref.split(':')[1]}
@@ -253,12 +252,14 @@ function RoleCard({
   role,
   selected,
   fromDefault,
+  debug,
   disabled,
   onToggle,
 }: {
   role: CatalogRole;
   selected: boolean;
   fromDefault: boolean;
+  debug: boolean;
   disabled: boolean;
   onToggle: () => void;
 }) {
@@ -292,17 +293,20 @@ function RoleCard({
           )}
         </span>
       </button>
+      {(role.default || fromDefault || debug) && (
       <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-6 text-[11px]">
-        {role.group ? (
-          <span className="rounded-pill bg-muted px-1.5 py-0.5 font-mono">{role.group}</span>
-        ) : null}
-        <span className="rounded-pill bg-muted px-1.5 py-0.5">{role.scope}</span>
-        {fromDefault && (
+        {role.default && (
+          <span className="rounded-pill bg-primary-soft px-1.5 py-0.5 font-semibold text-primary">Default</span>
+        )}
+        {fromDefault && !role.default && (
           <span className="rounded-pill bg-warning-soft px-1.5 py-0.5 font-semibold text-warning-foreground">
-            department default
+            Department default
           </span>
         )}
-        {role.permissions.length > 0 && (
+        {role.default && <span className="text-muted-foreground">Everyone gets this unless you untick it.</span>}
+        {debug && role.group && <span className="rounded-pill bg-muted px-1.5 py-0.5 font-mono">{role.group}</span>}
+        {debug && <span className="rounded-pill bg-muted px-1.5 py-0.5">{role.scope}</span>}
+        {debug && role.permissions.length > 0 && (
           <button
             type="button"
             onClick={() => setShowPerms((v) => !v)}
@@ -314,8 +318,9 @@ function RoleCard({
           </button>
         )}
       </div>
+      )}
       {role.note && <p className="mt-1 pl-6 text-[11px] text-muted-foreground">{role.note}</p>}
-      {showPerms && (
+      {debug && showPerms && (
         <div className="mt-2 flex flex-wrap gap-1 pl-6">
           {role.permissions.map((p) => (
             <span key={p} className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">

@@ -7,6 +7,7 @@ import {
   type ErrorComponentProps,
 } from '@tanstack/react-router';
 
+import { PERSON_STATUSES, type PersonStatus } from '@/api/people';
 import { Layout } from '@/components/Layout';
 import { getUserManager, isOidcAuthMode } from '@/auth/oidc';
 import { DashboardPage } from '@/pages/DashboardPage';
@@ -19,9 +20,6 @@ import { KeycloakPage } from '@/pages/KeycloakPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { OnboardingAccessPage } from '@/pages/onboarding/OnboardingAccessPage';
 import { OnboardingReviewPage } from '@/pages/onboarding/OnboardingReviewPage';
-import { NewDraftPage } from '@/pages/NewDraftPage';
-import { DraftDetailPage } from '@/pages/DraftDetailPage';
-import { ApprovalsPage } from '@/pages/ApprovalsPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { OidcCallbackPage } from '@/pages/OidcCallbackPage';
 
@@ -99,6 +97,8 @@ const dashboardRoute = createRoute({
 const peopleRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: '/people',
+  validateSearch: (search: Record<string, unknown>): { status?: PersonStatus } =>
+    PERSON_STATUSES.some((s) => s.value === search.status) ? { status: search.status as PersonStatus } : {},
   component: PeoplePage,
 });
 
@@ -120,20 +120,6 @@ const settingsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: '/settings',
   component: SettingsPage,
-});
-
-const newDraftRoute = createRoute({
-  getParentRoute: () => appLayoutRoute,
-  path: '/drafts/new',
-  validateSearch: (search: Record<string, unknown>): { person?: string } =>
-    typeof search.person === 'string' ? { person: search.person } : {},
-  component: NewDraftPage,
-});
-
-const draftDetailRoute = createRoute({
-  getParentRoute: () => appLayoutRoute,
-  path: '/drafts/$id',
-  component: DraftDetailPage,
 });
 
 const onboardingListRoute = createRoute({
@@ -179,12 +165,6 @@ const departmentsRoute = createRoute({
   component: DepartmentsPage,
 });
 
-const approvalsRoute = createRoute({
-  getParentRoute: () => appLayoutRoute,
-  path: '/approvals',
-  component: ApprovalsPage,
-});
-
 const routeTree = rootRoute.addChildren([
   loginRoute,
   oidcCallbackRoute,
@@ -193,15 +173,12 @@ const routeTree = rootRoute.addChildren([
     dashboardRoute,
     peopleRoute,
     personDetailRoute,
-    newDraftRoute,
-    draftDetailRoute,
     onboardingListRoute,
     onboardingNewRoute,
     onboardingDetailsRoute,
     onboardingAccessRoute,
     onboardingReviewRoute,
     departmentsRoute,
-    approvalsRoute,
     keycloakRoute,
     settingsRoute,
   ]),

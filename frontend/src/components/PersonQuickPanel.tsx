@@ -6,6 +6,7 @@ import { ExternalLink, Pencil, X } from 'lucide-react';
 import { getPerson } from '@/api/people';
 import { PersonActions } from '@/components/PersonActions';
 import { PersonStatusBadge } from '@/components/PersonStatusBadge';
+import { formatPhone } from '@/lib/phone';
 
 /** Slide-over with a person's summary and every quick action, so HR never has to leave the list. */
 export function PersonQuickPanel({ personId, onClose }: { personId: string; onClose: () => void }) {
@@ -52,13 +53,17 @@ export function PersonQuickPanel({ personId, onClose }: { personId: string; onCl
 
             <dl className="grid grid-cols-[7rem_1fr] gap-x-2 gap-y-1 text-sm">
               <dt className="text-muted-foreground">Email</dt>
-              <dd className="break-words">
-                {p.email_missing ? <span className="font-semibold text-warning">Missing</span> : p.email}
-              </dd>
+              <dd className="break-words">{p.email}</dd>
               <dt className="text-muted-foreground">Org email</dt>
               <dd className="break-words">{p.org_email || '—'}</dd>
               <dt className="text-muted-foreground">Phone</dt>
-              <dd>{p.phone || '—'}</dd>
+              <dd>{formatPhone(p.phone) || '—'}</dd>
+              {p.username && (
+                <>
+                  <dt className="text-muted-foreground">Login name</dt>
+                  <dd className="break-words">{p.username}</dd>
+                </>
+              )}
               {p.is_banned && (
                 <>
                   <dt className="text-muted-foreground">Flag</dt>
@@ -67,7 +72,7 @@ export function PersonQuickPanel({ personId, onClose }: { personId: string; onCl
               )}
             </dl>
 
-            <PersonActions personId={p.id} />
+            <PersonActions personId={p.id} onRemoved={onClose} />
           </div>
         )}
         {person.error && <p className="p-5 text-sm text-destructive">{(person.error as Error).message}</p>}

@@ -44,7 +44,9 @@ export function DenConnection({ base }: { base: string }) {
           Connected modules take their look and organisation settings from Den and pick up changes within a minute.
         </p>
       </div>
-      {s?.paired ? (
+      {status.isPending ? (
+        <p className="text-muted-foreground">Checking…</p>
+      ) : s?.paired ? (
         <>
           <p>
             Connected to <code className="font-mono">{s.den_base_url}</code>

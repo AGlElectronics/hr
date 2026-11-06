@@ -1,6 +1,3 @@
-import { apiRequest } from './client';
-import type { EmploymentDraft } from './drafts';
-
 export type ProvisioningJob = {
   id: string;
   draft_id: string;
@@ -12,18 +9,3 @@ export type ProvisioningJob = {
   started_at: string;
   finished_at?: string | null;
 };
-
-export const triggerProvision = (draftID: string) =>
-  apiRequest<{ draft: EmploymentDraft; jobs: ProvisioningJob[] }>(
-    `/api/drafts/${draftID}/provision`,
-    { method: 'POST' }
-  );
-
-export const listProvisioningJobs = (draftID: string) =>
-  apiRequest<{ items: ProvisioningJob[] }>(`/api/drafts/${draftID}/provisioning-jobs`);
-
-export const notifyUser = (draftID: string, body: { subject?: string; message?: string } = {}) =>
-  apiRequest<{ channel: string; recipient: string; subject: string }>(
-    `/api/drafts/${draftID}/notify`,
-    { method: 'POST', body }
-  );

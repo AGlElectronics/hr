@@ -9,6 +9,8 @@ export type CatalogRole = {
   scope: string;
   permissions: string[];
   note?: string;
+  /** Pre-selected for everyone (e.g. Den: Member); can be unticked. */
+  default?: boolean;
 };
 
 export type CatalogModule = {

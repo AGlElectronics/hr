@@ -1,16 +1,20 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog"
 
 	"github.com/AGlElectronics/hr/backend/internal/audit"
 	"github.com/AGlElectronics/hr/backend/internal/domain"
@@ -25,6 +29,48 @@ type DepartmentService struct {
 	pool   *pgxpool.Pool
 	audit  *audit.Writer
 	groups provisioners.GroupEnsurer // nil when the IdP cannot pre-create groups
+	hooks  []OffboardHook            // modules told after a create/rename
+	logger zerolog.Logger
+}
+
+// SetHooks registers the modules told when a department is created or
+// renamed (DEPARTMENT_HOOKS, same "url|token" format as OFFBOARD_HOOKS;
+// e.g. Tasks keeps one space per department).
+func (s *DepartmentService) SetHooks(hooks []OffboardHook, logger zerolog.Logger) {
+	s.hooks = hooks
+	s.logger = logger.With().Str("component", "department_hooks").Logger()
+}
+
+// notifyHooks tells each hook the department's current shape. A failed hook
+// is logged and never blocks the save: the module catches up on the next
+// save or via the backfill script.
+func (s *DepartmentService) notifyHooks(ctx context.Context, d *domain.Department) {
+	for _, h := range s.hooks {
+		body, _ := json.Marshal(map[string]string{
+			"id": d.ID.String(), "slug": d.Slug, "name": d.Name, "group": d.GroupName,
+		})
+		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		req, err := http.NewRequestWithContext(hctx, http.MethodPost, h.URL, bytes.NewReader(body))
+		if err != nil {
+			cancel()
+			s.logger.Warn().Str("url", h.URL).Err(err).Msg("department hook is misconfigured")
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if h.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+h.Token)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = res.Body.Close()
+		}
+		cancel()
+		if err != nil {
+			s.logger.Warn().Str("url", h.URL).Str("department", d.Slug).Err(err).Msg("department hook failed")
+		} else if res.StatusCode >= 300 {
+			s.logger.Warn().Str("url", h.URL).Str("department", d.Slug).Str("status", res.Status).Msg("department hook refused the update")
+		}
+	}
 }
 
 // NewDepartmentService wires a DepartmentService.
@@ -86,12 +132,14 @@ func (in *DepartmentInput) normalize() map[string]string {
 	return issues
 }
 
-const deptCols = `id, slug, name, description, group_name, default_roles, idp_synced_at, COALESCE(idp_sync_error, ''), created_at, updated_at`
+const deptCols = `id, slug, name, description, group_name, default_roles, idp_synced_at, COALESCE(idp_sync_error, ''), created_at, updated_at,
+(SELECT COUNT(DISTINCT dr.person_id) FROM employment_drafts dr JOIN people p ON p.id = dr.person_id
+  WHERE dr.department_id = departments.id AND dr.state = 'active' AND p.status IN ('active', 'paused'))`
 
 func scanDepartment(row rowScanner) (*domain.Department, error) {
 	d := &domain.Department{}
 	var roles []byte
-	if err := row.Scan(&d.ID, &d.Slug, &d.Name, &d.Description, &d.GroupName, &roles, &d.IdPSyncedAt, &d.IdPSyncError, &d.CreatedAt, &d.UpdatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.Slug, &d.Name, &d.Description, &d.GroupName, &roles, &d.IdPSyncedAt, &d.IdPSyncError, &d.CreatedAt, &d.UpdatedAt, &d.MemberCount); err != nil {
 		return nil, err
 	}
 	d.DefaultRoles = []domain.RoleRef{}
@@ -153,7 +201,9 @@ RETURNING `+deptCols, in.Slug, in.Name, in.Description, "dept-"+in.Slug, roles))
 	if err := s.audit.Record(ctx, actor, "department.create", "department", d.ID, map[string]any{"slug": d.Slug}); err != nil {
 		return nil, err
 	}
-	return s.syncIdP(ctx, d), nil
+	d = s.syncIdP(ctx, d)
+	s.notifyHooks(ctx, d)
+	return d, nil
 }
 
 // Update changes name, description and default access (slug and group stay).
@@ -178,7 +228,9 @@ RETURNING `+deptCols, id, in.Name, in.Description, roles))
 	}); err != nil {
 		return nil, err
 	}
-	return s.syncIdP(ctx, d), nil
+	d = s.syncIdP(ctx, d)
+	s.notifyHooks(ctx, d)
+	return d, nil
 }
 
 // syncIdP creates the department group and its default role groups. A

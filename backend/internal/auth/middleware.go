@@ -29,7 +29,7 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier) func(http.Handle
 				if name == "" {
 					name = "dev-hr-admin"
 				}
-				ctx = actor.With(ctx, &actor.Actor{Username: name, HasAccess: true})
+				ctx = actor.With(ctx, &actor.Actor{Username: name, Issuer: "dev:", Subject: name, HasAccess: true})
 
 			case config.AuthModeOIDC:
 				if oidcVerifier == nil {
@@ -49,6 +49,8 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier) func(http.Handle
 				}
 				ctx = actor.With(ctx, &actor.Actor{
 					Username:  DisplayName(claims),
+					Issuer:    claims.Issuer,
+					Subject:   claims.Subject,
 					Groups:    claims.Groups,
 					HasAccess: inAnyGroup(claims.Groups, cfg.AccessGroups),
 				})

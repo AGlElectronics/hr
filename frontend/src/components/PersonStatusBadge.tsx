@@ -5,7 +5,6 @@ const tone: Record<PersonStatus, string> = {
   onboarding: 'bg-warning-soft text-warning-foreground',
   active: 'bg-success-soft text-success-foreground',
   paused: 'bg-info-soft text-info-foreground',
-  offboarded: 'bg-muted text-muted-foreground',
 };
 
 export function PersonStatusBadge({ status }: { status: PersonStatus }) {

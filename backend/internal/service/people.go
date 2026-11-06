@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/mail"
-	"regexp"
 	"strings"
 	"time"
 
@@ -16,18 +14,22 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/audit"
 	"github.com/AGlElectronics/hr/backend/internal/domain"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
+	"github.com/AGlElectronics/hr/backend/internal/provisioners"
 )
 
 // PeopleService owns CRUD over the `people` table. Draft operations live
 // in DraftService so each entity has one clear owner.
 type PeopleService struct {
-	pool  *pgxpool.Pool
-	audit *audit.Writer
+	pool      *pgxpool.Pool
+	audit     *audit.Writer
+	settings  *SettingsService
+	usernames provisioners.UsernameDirectory // nil when the IdP cannot be asked
 }
 
-// NewPeopleService wires a PeopleService to its collaborators.
-func NewPeopleService(pool *pgxpool.Pool, aud *audit.Writer) *PeopleService {
-	return &PeopleService{pool: pool, audit: aud}
+// NewPeopleService wires a PeopleService to its collaborators. usernames may
+// be nil (login names are then only checked against HR's own records).
+func NewPeopleService(pool *pgxpool.Pool, aud *audit.Writer, settings *SettingsService, usernames provisioners.UsernameDirectory) *PeopleService {
+	return &PeopleService{pool: pool, audit: aud, settings: settings, usernames: usernames}
 }
 
 // PersonInput is the writeable surface of a person (create and full update).
@@ -40,7 +42,7 @@ type PersonInput struct {
 	Email            string                  `json:"email"`
 	OrgEmail         string                  `json:"org_email,omitempty"`
 	Phone            string                  `json:"phone,omitempty"`
-	Address          string                  `json:"address,omitempty"`
+	Address          domain.Address          `json:"address"`
 	SocialHandles    map[string]string       `json:"social_handles,omitempty"`
 	EmergencyContact domain.EmergencyContact `json:"emergency_contact"`
 	Status           string                  `json:"status,omitempty"`
@@ -50,39 +52,56 @@ type PersonInput struct {
 // CreatePersonInput is kept as an alias for handler readability.
 type CreatePersonInput = PersonInput
 
-var phoneRE = regexp.MustCompile(`^\+?[0-9 ()\-./]{5,24}$`)
-
 var knownSocials = map[string]bool{"telegram": true, "discord": true, "x": true, "instagram": true, "bluesky": true, "mastodon": true}
 
-func validEmail(s string) bool {
-	a, err := mail.ParseAddress(s)
-	return err == nil && a.Address == s && strings.Contains(s[strings.LastIndex(s, "@"):], ".")
+// rules are the settings validation depends on.
+type rules struct {
+	defaultCountry string
+	orgDomain      string
 }
 
-// normalize trims input and returns field-level validation issues.
-func (in *PersonInput) normalize() map[string]string {
-	t := strings.TrimSpace
-	in.FirstName, in.LastName, in.Nickname = t(in.FirstName), t(in.LastName), t(in.Nickname)
-	in.Email, in.OrgEmail = strings.ToLower(t(in.Email)), strings.ToLower(t(in.OrgEmail))
-	in.Phone, in.Address, in.Notes, in.Status = t(in.Phone), t(in.Address), t(in.Notes), t(in.Status)
-	ec := &in.EmergencyContact
-	ec.Name, ec.Phone, ec.Email, ec.Comments = t(ec.Name), t(ec.Phone), strings.ToLower(t(ec.Email)), t(ec.Comments)
+func (s *PeopleService) rules(ctx context.Context) (rules, *Settings, error) {
+	if s.settings == nil {
+		return rules{}, &Settings{UsernameTemplate: DefaultUsernameTemplate, OrgEmailTemplate: DefaultOrgEmailTemplate}, nil
+	}
+	st, err := s.settings.Get(ctx)
+	if err != nil {
+		return rules{}, nil, err
+	}
+	return rules{defaultCountry: st.DefaultCountry, orgDomain: st.OrgEmailDomain}, st, nil
+}
 
+// normalize cleans input and returns field-level validation issues. Phone
+// numbers are rewritten to E.164 when valid.
+func (in *PersonInput) normalize(r rules) map[string]string {
+	t := strings.TrimSpace
+	in.FirstName, in.LastName, in.Nickname = cleanName(in.FirstName), cleanName(in.LastName), cleanName(in.Nickname)
+	in.Email, in.OrgEmail = strings.ToLower(t(in.Email)), strings.ToLower(t(in.OrgEmail))
+	in.Phone, in.Notes, in.Status = t(in.Phone), t(in.Notes), t(in.Status)
+	in.Address = normalizeAddress(in.Address)
+	ec := &in.EmergencyContact
+	ec.Name, ec.Phone, ec.Email, ec.Comments = cleanName(ec.Name), t(ec.Phone), strings.ToLower(t(ec.Email)), t(ec.Comments)
 	in.DateOfBirth = t(in.DateOfBirth)
 
 	// Every field of the volunteer definition is required except the
-	// organization email (assigned by workspace provisioning), social
-	// handles, and the emergency contact's email/comments.
+	// organization email, social handles, and the emergency contact's
+	// email/comments.
 	issues := map[string]string{}
 	for field, val := range map[string]string{
 		"first_name": in.FirstName, "last_name": in.LastName, "nickname": in.Nickname,
-		"date_of_birth": in.DateOfBirth, "address": in.Address, "phone": in.Phone,
+		"date_of_birth": in.DateOfBirth, "phone": in.Phone,
 		"emergency_contact.name": ec.Name, "emergency_contact.phone": ec.Phone,
 	} {
 		if val == "" {
 			issues[field] = "required"
 		}
 	}
+	for field, val := range map[string]string{"first_name": in.FirstName, "last_name": in.LastName, "nickname": in.Nickname, "emergency_contact.name": ec.Name} {
+		if val != "" && !validName(val) {
+			issues[field] = nameRule
+		}
+	}
+	addressIssues(in.Address, issues)
 	if in.DateOfBirth != "" {
 		dob, err := time.Parse("2006-01-02", in.DateOfBirth)
 		switch {
@@ -95,17 +114,27 @@ func (in *PersonInput) normalize() map[string]string {
 	switch {
 	case in.Email == "":
 		issues["email"] = "required"
-	case !validEmail(in.Email) || strings.HasSuffix(in.Email, domain.PlaceholderEmailDomain):
+	case !validEmail(in.Email):
 		issues["email"] = "must be a valid email address"
 	}
-	if in.OrgEmail != "" && !validEmail(in.OrgEmail) {
-		issues["org_email"] = "must be a valid email address"
+	if in.OrgEmail != "" {
+		if msg := orgEmailIssue(in.OrgEmail, r.orgDomain); msg != "" {
+			issues["org_email"] = msg
+		}
 	}
-	if in.Phone != "" && !phoneRE.MatchString(in.Phone) {
-		issues["phone"] = "must look like a phone number, e.g. +43 660 1234567"
+	if in.Phone != "" {
+		if e164 := NormalizePhone(in.Phone, r.defaultCountry); e164 != "" {
+			in.Phone = e164
+		} else {
+			issues["phone"] = phoneRule(r.defaultCountry)
+		}
 	}
-	if ec.Phone != "" && !phoneRE.MatchString(ec.Phone) {
-		issues["emergency_contact.phone"] = "must look like a phone number"
+	if ec.Phone != "" {
+		if e164 := NormalizePhone(ec.Phone, r.defaultCountry); e164 != "" {
+			ec.Phone = e164
+		} else {
+			issues["emergency_contact.phone"] = phoneRule(r.defaultCountry)
+		}
 	}
 	if ec.Email != "" && !validEmail(ec.Email) {
 		issues["emergency_contact.email"] = "must be a valid email address"
@@ -113,7 +142,7 @@ func (in *PersonInput) normalize() map[string]string {
 	if in.Status == "" {
 		in.Status = string(domain.PersonApplicant)
 	} else if !domain.PersonStatus(in.Status).Valid() {
-		issues["status"] = "must be one of applicant, onboarding, active, paused, offboarded"
+		issues["status"] = "must be one of applicant, onboarding, active, paused"
 	}
 	socials := map[string]string{}
 	for k, v := range in.SocialHandles {
@@ -140,69 +169,153 @@ func (in *PersonInput) names() (legal, display string) {
 	return
 }
 
-const personCols = `id, first_name, last_name, COALESCE(nickname, ''),
+const personCols = `id, first_name, last_name, COALESCE(nickname, ''), COALESCE(username, ''),
 COALESCE(to_char(date_of_birth, 'YYYY-MM-DD'), ''), is_banned, legal_name, display_name, email,
-COALESCE(org_email, ''), COALESCE(phone, ''), COALESCE(address, ''), social_handles, emergency_contact,
-status, COALESCE(notes, ''), offboarded_at, COALESCE(offboard_reason, ''), created_at, updated_at`
+COALESCE(org_email, ''), COALESCE(phone, ''), address, social_handles, emergency_contact,
+status, COALESCE(notes, ''), created_at, updated_at`
 
 // personInputFrom rebuilds the writeable surface of a stored person so the
 // same validation can check whether a profile is complete.
 func personInputFrom(p *domain.Person) PersonInput {
-	email := p.Email
-	if p.EmailMissing {
-		email = ""
-	}
 	return PersonInput{
 		FirstName: p.FirstName, LastName: p.LastName, Nickname: p.Nickname, DateOfBirth: p.DateOfBirth,
-		IsBanned: p.IsBanned, Email: email, OrgEmail: p.OrgEmail, Phone: p.Phone, Address: p.Address,
+		IsBanned: p.IsBanned, Email: p.Email, OrgEmail: p.OrgEmail, Phone: p.Phone, Address: p.Address,
 		SocialHandles: p.SocialHandles, EmergencyContact: p.EmergencyContact, Status: string(p.Status), Notes: p.Notes,
 	}
 }
 
 // MissingFields returns the validation issues that keep a stored person from
-// being onboarded (empty when the profile is complete).
+// being onboarded (empty when the profile is complete). Stored phone numbers
+// are already E.164, so no default country is needed.
 func MissingFields(p *domain.Person) map[string]string {
 	in := personInputFrom(p)
-	return in.normalize()
+	return in.normalize(rules{})
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanPerson(row rowScanner) (*domain.Person, error) {
 	p := &domain.Person{}
-	var socials, emergency []byte
-	if err := row.Scan(&p.ID, &p.FirstName, &p.LastName, &p.Nickname, &p.DateOfBirth, &p.IsBanned, &p.LegalName, &p.DisplayName, &p.Email,
-		&p.OrgEmail, &p.Phone, &p.Address, &socials, &emergency, &p.Status, &p.Notes, &p.OffboardedAt, &p.OffboardReason, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	var address, socials, emergency []byte
+	if err := row.Scan(&p.ID, &p.FirstName, &p.LastName, &p.Nickname, &p.Username, &p.DateOfBirth, &p.IsBanned, &p.LegalName, &p.DisplayName, &p.Email,
+		&p.OrgEmail, &p.Phone, &address, &socials, &emergency, &p.Status, &p.Notes, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		return nil, err
 	}
 	p.SocialHandles = map[string]string{}
+	_ = json.Unmarshal(address, &p.Address)
 	_ = json.Unmarshal(socials, &p.SocialHandles)
 	_ = json.Unmarshal(emergency, &p.EmergencyContact)
-	p.EmailMissing = strings.HasSuffix(p.Email, domain.PlaceholderEmailDomain)
 	return p, nil
 }
 
-func (s *PeopleService) ensureEmailFree(ctx context.Context, email string, except uuid.UUID) error {
-	var other uuid.UUID
-	err := s.pool.QueryRow(ctx, `SELECT id FROM people WHERE lower(email) = $1 AND id <> $2 LIMIT 1`, email, except).Scan(&other)
-	if err == nil {
-		return httperror.Validation("validation failed", map[string]string{"email": "another person already uses this email"})
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+// checkUnique refuses an email, login name or organization email that
+// someone else already uses (in HR, or for the login name in the IdP).
+func (s *PeopleService) checkUnique(ctx context.Context, self uuid.UUID, email, username, orgEmail string) error {
+	issues := map[string]string{}
+	var field string
+	err := s.pool.QueryRow(ctx, `
+SELECT CASE WHEN lower(email) = $2 THEN 'email'
+            WHEN $3 <> '' AND lower(COALESCE(username, '')) = $3 THEN 'username'
+            ELSE 'org_email' END
+  FROM people
+ WHERE id <> $1 AND (lower(email) = $2 OR ($3 <> '' AND lower(COALESCE(username, '')) = $3)
+                     OR ($4 <> '' AND lower(COALESCE(org_email, '')) = $4))
+ LIMIT 1`, self, email, strings.ToLower(username), orgEmail).Scan(&field)
+	switch {
+	case err == nil:
+		switch field {
+		case "email":
+			issues["email"] = "another person already uses this email"
+		case "username":
+			issues["nickname"] = "this nickname is already taken (login name " + username + ")"
+		default:
+			issues["org_email"] = "another person already uses this organization email"
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
 		return httperror.Internal(err)
+	}
+	if issues["nickname"] == "" && username != "" && s.usernames != nil {
+		owner, found, err := s.usernames.UsernameOwner(ctx, username)
+		if err == nil && found && owner != self.String() {
+			issues["nickname"] = "this nickname is already taken (login name " + username + ")"
+		}
+	}
+	if len(issues) > 0 {
+		return httperror.Validation("validation failed", issues)
 	}
 	return nil
 }
 
+// UsernameCheck is the login name a nickname would give and whether it is free.
+type UsernameCheck struct {
+	Username  string `json:"username"`
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// CheckUsername previews the login name for the given names (self is the
+// person being edited, or uuid.Nil for a new one).
+func (s *PeopleService) CheckUsername(ctx context.Context, self uuid.UUID, first, last, nickname string) (*UsernameCheck, error) {
+	_, st, err := s.rules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	first, last, nickname = cleanName(first), cleanName(last), cleanName(nickname)
+	for _, n := range []string{first, last, nickname} {
+		if n != "" && !validName(n) {
+			return &UsernameCheck{Reason: "names " + nameRule}, nil
+		}
+	}
+	u := UsernameFor(st.UsernameTemplate, &domain.Person{FirstName: first, LastName: last, Nickname: nickname})
+	out := &UsernameCheck{Username: u}
+	if len(u) < 3 {
+		out.Reason = "must give a login name of at least 3 letters"
+		return out, nil
+	}
+	err = s.checkUnique(ctx, self, "", u, "")
+	var he *httperror.Error
+	switch {
+	case err == nil:
+		out.Available = true
+	case errors.As(err, &he) && he.Code == httperror.CodeValidation:
+		out.Reason = "this nickname is already taken"
+	default:
+		return nil, err
+	}
+	return out, nil
+}
+
+// prepare validates the input and works out the login name.
+func (s *PeopleService) prepare(ctx context.Context, self uuid.UUID, in *PersonInput) (string, error) {
+	r, st, err := s.rules(ctx)
+	if err != nil {
+		return "", err
+	}
+	issues := in.normalize(r)
+	username := ""
+	if in.Nickname != "" || in.FirstName != "" {
+		username = UsernameFor(st.UsernameTemplate, &domain.Person{FirstName: in.FirstName, LastName: in.LastName, Nickname: in.Nickname})
+		if len(username) < 3 && issues["nickname"] == "" {
+			issues["nickname"] = "must give a login name of at least 3 letters"
+		}
+	}
+	if len(issues) > 0 {
+		return "", httperror.Validation("validation failed", issues)
+	}
+	if err := s.checkUnique(ctx, self, in.Email, username, in.OrgEmail); err != nil {
+		return "", err
+	}
+	return username, nil
+}
+
 // Create inserts a new person and emits an audit event.
 func (s *PeopleService) Create(ctx context.Context, actor string, in PersonInput) (*domain.Person, error) {
-	if issues := in.normalize(); len(issues) > 0 {
-		return nil, httperror.Validation("validation failed", issues)
-	}
-	if err := s.ensureEmailFree(ctx, in.Email, uuid.Nil); err != nil {
+	username, err := s.prepare(ctx, uuid.Nil, &in)
+	if err != nil {
 		return nil, err
 	}
 	legal, display := in.names()
+	address, _ := json.Marshal(in.Address)
 	socials, _ := json.Marshal(in.SocialHandles)
 	emergency, _ := json.Marshal(in.EmergencyContact)
 	now := time.Now().UTC()
@@ -210,17 +323,17 @@ func (s *PeopleService) Create(ctx context.Context, actor string, in PersonInput
 	p, err := scanPerson(s.pool.QueryRow(ctx, `
 INSERT INTO people (id, first_name, last_name, nickname, legal_name, display_name, email, org_email,
                     phone, address, social_handles, emergency_contact, status, notes, created_at, updated_at,
-                    date_of_birth, is_banned)
-VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''),
-        $11, $12, $13, NULLIF($14, ''), $15, $15, NULLIF($16, '')::date, $17)
+                    date_of_birth, is_banned, username)
+VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10,
+        $11, $12, $13, NULLIF($14, ''), $15, $15, NULLIF($16, '')::date, $17, NULLIF($18, ''))
 RETURNING `+personCols,
 		uuid.New(), in.FirstName, in.LastName, in.Nickname, legal, display, in.Email, in.OrgEmail,
-		in.Phone, in.Address, socials, emergency, in.Status, in.Notes, now, in.DateOfBirth, in.IsBanned))
+		in.Phone, address, socials, emergency, in.Status, in.Notes, now, in.DateOfBirth, in.IsBanned, username))
 	if err != nil {
 		return nil, httperror.Internal(err)
 	}
 	if err := s.audit.Record(ctx, actor, "person.create", "person", p.ID, map[string]any{
-		"legal_name": p.LegalName, "email": p.Email,
+		"username": p.Username,
 	}); err != nil {
 		return nil, err
 	}
@@ -229,25 +342,25 @@ RETURNING `+personCols,
 
 // Update replaces every writeable field of a person.
 func (s *PeopleService) Update(ctx context.Context, actor string, id uuid.UUID, in PersonInput) (*domain.Person, error) {
-	if issues := in.normalize(); len(issues) > 0 {
-		return nil, httperror.Validation("validation failed", issues)
-	}
-	if err := s.ensureEmailFree(ctx, in.Email, id); err != nil {
+	username, err := s.prepare(ctx, id, &in)
+	if err != nil {
 		return nil, err
 	}
 	legal, display := in.names()
+	address, _ := json.Marshal(in.Address)
 	socials, _ := json.Marshal(in.SocialHandles)
 	emergency, _ := json.Marshal(in.EmergencyContact)
 
 	p, err := scanPerson(s.pool.QueryRow(ctx, `
 UPDATE people SET first_name = $2, last_name = $3, nickname = NULLIF($4, ''), legal_name = $5,
        display_name = $6, email = $7, org_email = NULLIF($8, ''), phone = NULLIF($9, ''),
-       address = NULLIF($10, ''), social_handles = $11, emergency_contact = $12, status = $13,
-       notes = NULLIF($14, ''), date_of_birth = NULLIF($15, '')::date, is_banned = $16, updated_at = now()
+       address = $10, social_handles = $11, emergency_contact = $12, status = $13,
+       notes = NULLIF($14, ''), date_of_birth = NULLIF($15, '')::date, is_banned = $16,
+       username = NULLIF($17, ''), updated_at = now()
  WHERE id = $1
 RETURNING `+personCols,
 		id, in.FirstName, in.LastName, in.Nickname, legal, display, in.Email, in.OrgEmail,
-		in.Phone, in.Address, socials, emergency, in.Status, in.Notes, in.DateOfBirth, in.IsBanned))
+		in.Phone, address, socials, emergency, in.Status, in.Notes, in.DateOfBirth, in.IsBanned, username))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, httperror.NotFound("person")
@@ -255,7 +368,7 @@ RETURNING `+personCols,
 		return nil, httperror.Internal(err)
 	}
 	if err := s.audit.Record(ctx, actor, "person.update", "person", p.ID, map[string]any{
-		"email": p.Email, "status": p.Status,
+		"username": p.Username, "status": p.Status,
 	}); err != nil {
 		return nil, err
 	}
@@ -283,12 +396,12 @@ func (s *PeopleService) Get(ctx context.Context, id uuid.UUID) (*domain.Person, 
 }
 
 // List returns people ordered by display name, optionally filtered by a
-// free-text query (name, nickname, email) and status.
+// free-text query (name, nickname, login name, email) and status.
 func (s *PeopleService) List(ctx context.Context, query, status string) ([]domain.Person, error) {
 	q := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
 	rows, err := s.pool.Query(ctx, `SELECT `+personCols+` FROM people
 WHERE ($1 = '%%' OR lower(legal_name) LIKE $1 OR lower(display_name) LIKE $1 OR lower(email) LIKE $1
-       OR lower(COALESCE(org_email, '')) LIKE $1)
+       OR lower(COALESCE(username, '')) LIKE $1 OR lower(COALESCE(org_email, '')) LIKE $1)
   AND ($2 = '' OR status = $2)
 ORDER BY lower(display_name)`, q, strings.TrimSpace(status))
 	if err != nil {

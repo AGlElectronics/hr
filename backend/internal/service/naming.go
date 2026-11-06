@@ -48,7 +48,8 @@ func ValidateTemplate(tpl string) string {
 	return ""
 }
 
-// Slug lowercases and strips accents: "Zoë Müller" -> "zoe-muller".
+// Slug lowercases, strips accents and apostrophes, and turns spaces into
+// dots: "Zoë Müller" -> "zoe.muller", "O'Brien" -> "obrien".
 func Slug(s string) string {
 	var b strings.Builder
 	for _, r := range norm.NFKD.String(strings.ToLower(strings.TrimSpace(s))) {
@@ -56,7 +57,7 @@ func Slug(s string) string {
 			continue
 		}
 		if unicode.IsSpace(r) {
-			r = '-'
+			r = '.'
 		}
 		b.WriteRune(r)
 	}
@@ -91,8 +92,8 @@ func RenderTemplate(tpl string, p *domain.Person) string {
 	return Slug(out)
 }
 
-// UsernameFor is the login name for a new account: the template, then
-// first.last, then the private email.
+// UsernameFor is the login name: the template, then first.last ("" when
+// neither can be rendered).
 func UsernameFor(tpl string, p *domain.Person) string {
 	if strings.TrimSpace(tpl) == "" {
 		tpl = DefaultUsernameTemplate
@@ -102,7 +103,12 @@ func UsernameFor(tpl string, p *domain.Person) string {
 			return u
 		}
 	}
-	return strings.ToLower(strings.TrimSpace(p.Email))
+	return ""
+}
+
+// templateUses reports whether a template reads the given placeholder.
+func templateUses(tpl, token string) bool {
+	return strings.Contains(tpl, token)
 }
 
 // personAttributes are the profile fields HR mirrors onto the IdP account.

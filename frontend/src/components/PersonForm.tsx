@@ -1,17 +1,26 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { ApiError } from '@/api/client';
-import { getSettings } from '@/api/settings';
-import { DEFAULT_USERNAME_TEMPLATE, renderWithFallback } from '@/lib/naming';
 import {
+  checkUsername,
+  EMPTY_ADDRESS,
   PERSON_STATUSES,
   SOCIAL_NETWORKS,
   type Person,
   type PersonInput,
   type PersonStatus,
 } from '@/api/people';
+import { getSettings } from '@/api/settings';
+import { AddressFields } from '@/components/AddressFields';
+import { EmailInput } from '@/components/EmailInput';
 import { OrgEmailInput } from '@/components/OrgEmailInput';
+import { PhoneInput } from '@/components/PhoneInput';
+import { useEmailCheck } from '@/lib/emailCheck';
+import { renderWithFallback } from '@/lib/naming';
+import { noAutofill } from '@/lib/noAutofill';
+import { phoneError } from '@/lib/phone';
+import { emailError, nameError } from '@/lib/validation';
 
 type Props = {
   initial?: Person;
@@ -40,10 +49,10 @@ function fromPerson(p?: Person): PersonInput {
     nickname: p?.nickname ?? '',
     date_of_birth: p?.date_of_birth ?? '',
     is_banned: p?.is_banned ?? false,
-    email: p && !p.email_missing ? p.email : '',
+    email: p?.email ?? '',
     org_email: p?.org_email ?? '',
     phone: p?.phone ?? '',
-    address: p?.address ?? '',
+    address: { ...EMPTY_ADDRESS, ...(p?.address ?? {}) },
     social_handles: { ...(p?.social_handles ?? {}) },
     emergency_contact: { ...(p?.emergency_contact ?? {}) },
     status: p?.status ?? 'applicant',
@@ -56,6 +65,15 @@ function fieldErrors(error: unknown): Record<string, string> {
     return error.details as Record<string, string>;
   }
   return {};
+}
+
+function useDebounced<T>(v: T, ms: number): T {
+  const [d, setD] = useState(v);
+  useEffect(() => {
+    const t = setTimeout(() => setD(v), ms);
+    return () => clearTimeout(t);
+  }, [v, ms]);
+  return d;
 }
 
 export function PersonForm({
@@ -71,58 +89,109 @@ export function PersonForm({
   statusReadOnly,
 }: Props) {
   const [v, setV] = useState<PersonInput>(() => fromPerson(initial));
-  const errs = fieldErrors(error);
+  const [emailOk, setEmailOk] = useState(false);
+  const [orgKept, setOrgKept] = useState('');
+  const serverErrs = fieldErrors(error);
   const settings = useQuery({ queryKey: ['settings'], queryFn: getSettings, staleTime: 60_000 });
-  const username = initial || !settings.data
-    ? ''
-    : renderWithFallback(settings.data.username_template || DEFAULT_USERNAME_TEMPLATE, {
-        first: v.first_name, last: v.last_name, nickname: v.nickname ?? '',
-      });
   const set = <K extends keyof PersonInput>(k: K, val: PersonInput[K]) => setV((s) => ({ ...s, [k]: val }));
   const setSocial = (k: string, val: string) =>
     setV((s) => ({ ...s, social_handles: { ...s.social_handles, [k]: val } }));
   const setEmergency = (k: keyof NonNullable<PersonInput['emergency_contact']>, val: string) =>
     setV((s) => ({ ...s, emergency_contact: { ...s.emergency_contact, [k]: val } }));
-
   const ec = v.emergency_contact ?? {};
+
+  const names = useDebounced({ first: v.first_name.trim(), last: v.last_name.trim(), nickname: (v.nickname ?? '').trim() }, 400);
+  const login = useQuery({
+    queryKey: ['username-check', names, initial?.id],
+    queryFn: () => checkUsername({ ...names, person_id: initial?.id }),
+    enabled: !!(names.nickname || (names.first && names.last)) && !nameError(names.nickname) && !nameError(names.first) && !nameError(names.last),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const loginTaken = login.data && !login.data.available;
+  const loginRenamed = !!initial?.username && !!login.data?.username && login.data.username !== initial.username;
+
+  const emailCheck = useEmailCheck(v.email);
+  const undeliverable = emailCheck.data?.deliverable === false;
+
+  // Organization email follow-up when a name change alters the suggested address.
+  const domain = settings.data?.org_email_domain ?? '';
+  const tpl = settings.data?.org_email_template;
+  const oldSug = initial ? renderWithFallback(tpl, { first: initial.first_name, last: initial.last_name, nickname: initial.nickname ?? '' }) : '';
+  const newSug = renderWithFallback(tpl, { first: v.first_name, last: v.last_name, nickname: v.nickname ?? '' });
+  const initialOrg = initial?.org_email ?? '';
+  const orgUnchanged = !!initialOrg && v.org_email === initialOrg && !!domain && !!newSug && newSug !== oldSug;
+  const orgFollows = orgUnchanged && initialOrg.toLowerCase() === `${oldSug}@${domain}`.toLowerCase();
+  const orgAsk = orgUnchanged && !orgFollows && orgKept !== newSug;
+  const newOrg = `${newSug}@${domain}`;
+
+  const errs: Record<string, string | undefined> = {
+    ...serverErrs,
+    first_name: nameError(v.first_name) ?? serverErrs.first_name,
+    last_name: nameError(v.last_name) ?? serverErrs.last_name,
+    nickname: nameError(v.nickname) ?? (loginTaken ? login.data?.reason || 'That nickname is already taken' : undefined) ?? serverErrs.nickname,
+    email: emailError(v.email) ?? serverErrs.email,
+    phone: phoneError(v.phone) ?? serverErrs.phone,
+    'emergency_contact.name': nameError(ec.name) ?? serverErrs['emergency_contact.name'],
+    'emergency_contact.phone': phoneError(ec.phone) ?? serverErrs['emergency_contact.phone'],
+    'emergency_contact.email': emailError(ec.email) ?? serverErrs['emergency_contact.email'],
+  };
+  const clientInvalid = [
+    nameError(v.first_name), nameError(v.last_name), nameError(v.nickname), nameError(ec.name),
+    emailError(v.email), emailError(ec.email), phoneError(v.phone), phoneError(ec.phone),
+  ].some(Boolean);
+
+  const a = v.address;
   const required = [
-    v.first_name, v.last_name, v.nickname, v.date_of_birth, v.email, v.phone, v.address, ec.name, ec.phone,
+    v.first_name, v.last_name, v.nickname, v.date_of_birth, v.email, v.phone,
+    a.street, a.postal_code, a.city, a.country, ec.name, ec.phone,
   ];
-  const canSubmit = canSubmitExtra && required.every((x) => (x ?? '').trim() !== '');
+  const canSubmit =
+    canSubmitExtra &&
+    required.every((x) => (x ?? '').trim() !== '') &&
+    !clientInvalid &&
+    !loginTaken &&
+    (!undeliverable || emailOk) &&
+    !orgAsk;
+
+  const loginHint = !login.data
+    ? 'Shown instead of the legal name where possible'
+    : loginRenamed
+      ? `Login name changes from ${initial!.username} to ${login.data.username}; they get an email about it.`
+      : `Login name: ${login.data.username}`;
 
   return (
     <form
+      autoComplete="off"
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit(v);
+        onSubmit(orgFollows ? { ...v, org_email: newOrg } : v);
       }}
       className="space-y-5"
     >
       {before}
-      <Section title="Identity" hint="Legal name is used for the identity provider; the nickname is what people see.">
+      <Section title="Identity" hint="The legal name is used for the account; the nickname is what people see and becomes the login name.">
         <Field label="First name" required error={errs.first_name}>
-          <input className={inputCls} required value={v.first_name} aria-invalid={!!errs.first_name}
-            onChange={(e) => set('first_name', e.target.value)} autoComplete="given-name" />
+          <input {...noAutofill} className={inputCls} required value={v.first_name} aria-invalid={!!errs.first_name}
+            onChange={(e) => set('first_name', e.target.value)} />
         </Field>
         <Field label="Last name" required error={errs.last_name}>
-          <input className={inputCls} required value={v.last_name} aria-invalid={!!errs.last_name}
-            onChange={(e) => set('last_name', e.target.value)} autoComplete="family-name" />
+          <input {...noAutofill} className={inputCls} required value={v.last_name} aria-invalid={!!errs.last_name}
+            onChange={(e) => set('last_name', e.target.value)} />
         </Field>
-        <Field label="Nickname" required error={errs.nickname}
-          hint={username ? `Login name for a new account: ${username}` : 'Shown instead of the legal name where possible'}>
-          <input className={inputCls} required value={v.nickname} aria-invalid={!!errs.nickname}
+        <Field label="Nickname" required error={errs.nickname} hint={loginHint}>
+          <input {...noAutofill} className={inputCls} required value={v.nickname} aria-invalid={!!errs.nickname}
             onChange={(e) => set('nickname', e.target.value)} />
         </Field>
         <Field label="Date of birth" required error={errs.date_of_birth}>
-          <input className={inputCls} type="date" required value={v.date_of_birth} aria-invalid={!!errs.date_of_birth}
-            max={new Date().toISOString().slice(0, 10)} onChange={(e) => set('date_of_birth', e.target.value)}
-            autoComplete="bday" />
+          <input {...noAutofill} className={inputCls} type="date" required value={v.date_of_birth} aria-invalid={!!errs.date_of_birth}
+            max={new Date().toISOString().slice(0, 10)} onChange={(e) => set('date_of_birth', e.target.value)} />
         </Field>
         {!hideStatus && (
           <>
             {statusReadOnly ? (
-              <Field label="Status" hint="Change it with Pause / Reactivate / Offboard">
-                <input className={`${inputCls} bg-muted`} readOnly
+              <Field label="Status" hint="Change it with Pause, Reactivate or Offboard">
+                <input className={`${inputCls} bg-muted`} readOnly tabIndex={-1}
                   value={PERSON_STATUSES.find((s) => s.value === v.status)?.label ?? v.status} />
               </Field>
             ) : (
@@ -143,28 +212,36 @@ export function PersonForm({
       </Section>
 
       <Section title="Contact" hint="Account emails (setting a password, offboarding notices) go to the private email.">
-        <Field label="Private email" required error={errs.email}>
-          <input className={inputCls} type="email" required value={v.email} aria-invalid={!!errs.email}
-            onChange={(e) => set('email', e.target.value)} autoComplete="email" placeholder="name@example.com" />
+        <Field as="div" label="Private email" required error={serverErrs.email}>
+          <EmailInput value={v.email} onChange={(val) => set('email', val)} acknowledged={emailOk} onAcknowledge={setEmailOk}
+            invalid={!!serverErrs.email} inputCls={inputCls} />
         </Field>
-        <Field label="Organization email" hint="Workspace address; type the name, the domain is added" error={errs.org_email}>
+        <Field as="div" label="Organization email" error={errs.org_email}>
           <OrgEmailInput className={inputCls} value={v.org_email ?? ''} invalid={!!errs.org_email}
             onChange={(val) => set('org_email', val)} firstName={v.first_name} lastName={v.last_name} nickname={v.nickname ?? ''} />
+          {orgFollows && (
+            <span className="mt-1 block text-xs text-muted-foreground">Changes to <strong>{newOrg}</strong> with the new name.</span>
+          )}
+          {orgAsk && (
+            <span className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning-soft px-2 py-1.5 text-xs text-warning-foreground">
+              Also change the organization email to <strong>{newOrg}</strong>?
+              <button type="button" onClick={() => set('org_email', newOrg)} className="font-semibold underline">Yes</button>
+              <button type="button" onClick={() => setOrgKept(newSug)} className="underline">Keep current</button>
+            </span>
+          )}
         </Field>
-        <Field label="Phone" required error={errs.phone}>
-          <input className={inputCls} type="tel" required value={v.phone} aria-invalid={!!errs.phone}
-            onChange={(e) => set('phone', e.target.value)} placeholder="+43 660 1234567" autoComplete="tel" />
+        <Field as="div" label="Phone" required error={errs.phone}>
+          <PhoneInput value={v.phone ?? ''} onChange={(val) => set('phone', val)} defaultCountry={settings.data?.default_country}
+            invalid={!!errs.phone} />
         </Field>
-        <Field label="Address" required wide error={errs.address}>
-          <textarea className={inputCls} rows={2} required value={v.address} aria-invalid={!!errs.address}
-            onChange={(e) => set('address', e.target.value)} autoComplete="street-address" />
-        </Field>
+        <AddressFields value={v.address} onChange={(val) => set('address', val)} defaultCountry={settings.data?.default_country}
+          errors={serverErrs} inputCls={inputCls} />
       </Section>
 
       <Section title="Social handles" hint="Used by teams to reach volunteers during the event. All optional.">
         {SOCIAL_NETWORKS.map((n) => (
           <Field key={n.key} label={n.label} error={errs[`social_handles.${n.key}`]}>
-            <input className={inputCls} value={v.social_handles?.[n.key] ?? ''} placeholder={n.placeholder}
+            <input {...noAutofill} className={inputCls} value={v.social_handles?.[n.key] ?? ''} placeholder={n.placeholder}
               onChange={(e) => setSocial(n.key, e.target.value)} />
           </Field>
         ))}
@@ -172,35 +249,35 @@ export function PersonForm({
 
       <Section title="Emergency contact" hint="Who to call if something happens on shift.">
         <Field label="Name" required error={errs['emergency_contact.name']}>
-          <input className={inputCls} required value={v.emergency_contact?.name ?? ''}
+          <input {...noAutofill} className={inputCls} required value={ec.name ?? ''}
             aria-invalid={!!errs['emergency_contact.name']} onChange={(e) => setEmergency('name', e.target.value)} />
         </Field>
-        <Field label="Phone" required error={errs['emergency_contact.phone']}>
-          <input className={inputCls} type="tel" required value={v.emergency_contact?.phone ?? ''}
-            aria-invalid={!!errs['emergency_contact.phone']} onChange={(e) => setEmergency('phone', e.target.value)} />
+        <Field as="div" label="Phone" required error={errs['emergency_contact.phone']}>
+          <PhoneInput value={ec.phone ?? ''} onChange={(val) => setEmergency('phone', val)}
+            defaultCountry={settings.data?.default_country} invalid={!!errs['emergency_contact.phone']} />
         </Field>
         <Field label="Email" error={errs['emergency_contact.email']}>
-          <input className={inputCls} type="email" value={v.emergency_contact?.email ?? ''}
+          <input {...noAutofill} className={inputCls} type="email" value={ec.email ?? ''}
             aria-invalid={!!errs['emergency_contact.email']} onChange={(e) => setEmergency('email', e.target.value)} />
         </Field>
         <Field label="Comments" hint="Relationship, languages, medical notes they asked us to keep">
-          <input className={inputCls} value={v.emergency_contact?.comments ?? ''} onChange={(e) => setEmergency('comments', e.target.value)} />
+          <input {...noAutofill} className={inputCls} value={ec.comments ?? ''} onChange={(e) => setEmergency('comments', e.target.value)} />
         </Field>
       </Section>
 
       <Section title="Internal notes">
         <Field label="Notes" wide hint="Only visible to HR">
-          <textarea className={inputCls} rows={3} value={v.notes} onChange={(e) => set('notes', e.target.value)} />
+          <textarea {...noAutofill} className={inputCls} rows={3} value={v.notes} onChange={(e) => set('notes', e.target.value)} />
         </Field>
       </Section>
 
       {error != null && (
         <p className="text-sm text-destructive">
           {(error as Error).message}
-          {Object.keys(errs).length > 0 && ' — check the highlighted fields.'}
+          {Object.keys(serverErrs).length > 0 && '. Check the highlighted fields.'}
         </p>
       )}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button type="submit" disabled={pending || !canSubmit}
           className="rounded-pill bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60">
           {pending ? 'Saving…' : submitLabel}
@@ -210,7 +287,9 @@ export function PersonForm({
             Cancel
           </button>
         )}
-        <span className="self-center text-xs text-muted-foreground"><span className="text-destructive">*</span> required</span>
+        <span className="text-xs text-muted-foreground"><span className="text-destructive">*</span> required</span>
+        {undeliverable && !emailOk && <span className="text-xs text-warning">Confirm the private email first.</span>}
+        {orgAsk && <span className="text-xs text-warning">Answer the organization email question first.</span>}
       </div>
     </form>
   );
@@ -226,16 +305,19 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
-function Field({ label, required, hint, error, wide, children }: {
+function Field({ label, required, hint, error, wide, as = 'label', children }: {
   label: string;
   required?: boolean;
   hint?: string;
   error?: string;
   wide?: boolean;
+  /** "div" for fields made of several controls, so clicks don't jump to the first one. */
+  as?: 'label' | 'div';
   children: ReactNode;
 }) {
+  const Tag = as;
   return (
-    <label className={`block text-sm ${wide ? 'md:col-span-2' : ''}`}>
+    <Tag className={`block text-sm ${wide ? 'md:col-span-2' : ''}`}>
       <span className="mb-1 block font-medium">
         {label}
         {required && <span className="text-destructive"> *</span>}
@@ -246,6 +328,6 @@ function Field({ label, required, hint, error, wide, children }: {
       ) : hint ? (
         <span className="mt-1 block text-xs text-muted-foreground">{hint}</span>
       ) : null}
-    </label>
+    </Tag>
   );
 }

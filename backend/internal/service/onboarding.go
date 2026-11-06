@@ -19,11 +19,17 @@ type OnboardingService struct {
 	people *PeopleService
 	drafts *DraftService
 	depts  *DepartmentService
+	// suiteDefaults returns the roles modules mark as on by default (nil-safe).
+	suiteDefaults func(ctx context.Context) []RolePlanInput
+	gate          *RoleGateService // nil = no training requirements
 }
 
-// NewOnboardingService wires an OnboardingService.
-func NewOnboardingService(people *PeopleService, drafts *DraftService, depts *DepartmentService) *OnboardingService {
-	return &OnboardingService{people: people, drafts: drafts, depts: depts}
+// SetRoleGate shows roles waiting for training on the overview.
+func (s *OnboardingService) SetRoleGate(g *RoleGateService) { s.gate = g }
+
+// NewOnboardingService wires an OnboardingService. suiteDefaults may be nil.
+func NewOnboardingService(people *PeopleService, drafts *DraftService, depts *DepartmentService, suiteDefaults func(ctx context.Context) []RolePlanInput) *OnboardingService {
+	return &OnboardingService{people: people, drafts: drafts, depts: depts, suiteDefaults: suiteDefaults}
 }
 
 // OnboardingDetailsInput is page 1 of the wizard.
@@ -40,6 +46,8 @@ type OnboardingView struct {
 	Person        *domain.Person          `json:"person"`
 	Department    *domain.Department      `json:"department,omitempty"`
 	MissingFields map[string]string       `json:"missing_fields"`
+	// PendingGrants are roles from this onboarding still waiting for training.
+	PendingGrants []PendingGrant `json:"pending_grants"`
 }
 
 func (s *OnboardingService) requireDepartment(ctx context.Context, id uuid.UUID) (*domain.Department, error) {
@@ -49,9 +57,21 @@ func (s *OnboardingService) requireDepartment(ctx context.Context, id uuid.UUID)
 	return s.depts.Get(ctx, id)
 }
 
+// applyDefaults sets the access plan to the suite-wide default roles plus
+// the department's defaults.
 func (s *OnboardingService) applyDefaults(ctx context.Context, actor string, draftID uuid.UUID, dept *domain.Department) error {
-	roles := make([]RolePlanInput, 0, len(dept.DefaultRoles))
+	roles := make([]RolePlanInput, 0, len(dept.DefaultRoles)+2)
+	seen := map[string]bool{}
+	if s.suiteDefaults != nil {
+		for _, r := range s.suiteDefaults(ctx) {
+			seen[r.RoleName] = true
+			roles = append(roles, r)
+		}
+	}
 	for _, r := range dept.DefaultRoles {
+		if seen[r.RoleName] {
+			continue
+		}
 		roles = append(roles, RolePlanInput{RoleName: r.RoleName, GroupName: r.GroupName, Scope: r.Scope})
 	}
 	_, err := s.drafts.AssignRoles(ctx, actor, draftID, AssignRolesInput{Roles: roles})
@@ -136,10 +156,21 @@ func (s *OnboardingService) View(ctx context.Context, draftID uuid.UUID) (*Onboa
 	if err != nil {
 		return nil, err
 	}
-	v := &OnboardingView{Draft: draft, Person: person, MissingFields: MissingFields(person)}
+	v := &OnboardingView{Draft: draft, Person: person, MissingFields: MissingFields(person), PendingGrants: []PendingGrant{}}
 	if draft.DepartmentID != nil {
 		if v.Department, err = s.depts.Get(ctx, *draft.DepartmentID); err != nil {
 			return nil, err
+		}
+	}
+	if s.gate != nil && draft.State == domain.DraftStateActive {
+		waiting, err := s.gate.WaitingForPerson(ctx, person.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, g := range waiting {
+			if g.DraftID != nil && *g.DraftID == draft.ID {
+				v.PendingGrants = append(v.PendingGrants, g)
+			}
 		}
 	}
 	return v, nil

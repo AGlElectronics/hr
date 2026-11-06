@@ -11,6 +11,7 @@ export type Department = {
   default_roles: RoleRef[];
   idp_synced_at?: string;
   idp_sync_error?: string;
+  member_count: number;
   created_at: string;
   updated_at: string;
 };

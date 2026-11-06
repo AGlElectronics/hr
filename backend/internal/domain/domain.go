@@ -4,6 +4,7 @@ package domain
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,31 +17,53 @@ import (
 // Person is the stable internal identity for a human in the HR module.
 // It survives across employment drafts, provisioning cycles and departures.
 //
-// Email is the person's private address (required): it is the IdP username
-// and where account credentials are sent. OrgEmail is the organization /
-// workspace account, set once provisioned.
+// Email is the person's private address (required): account emails
+// (set-password links, notices) go there. Username is the login name built
+// from the username template (by default the nickname). OrgEmail is the
+// organization / workspace account.
 type Person struct {
 	ID               uuid.UUID         `json:"id"`
 	FirstName        string            `json:"first_name"`
 	LastName         string            `json:"last_name"`
 	Nickname         string            `json:"nickname,omitempty"`
+	Username         string            `json:"username,omitempty"`
 	DateOfBirth      string            `json:"date_of_birth,omitempty"` // YYYY-MM-DD
 	IsBanned         bool              `json:"is_banned"`
 	LegalName        string            `json:"legal_name"`
 	DisplayName      string            `json:"display_name"`
 	Email            string            `json:"email"`
-	EmailMissing     bool              `json:"email_missing"`
 	OrgEmail         string            `json:"org_email,omitempty"`
 	Phone            string            `json:"phone,omitempty"`
-	Address          string            `json:"address,omitempty"`
+	Address          Address           `json:"address"`
 	SocialHandles    map[string]string `json:"social_handles"`
 	EmergencyContact EmergencyContact  `json:"emergency_contact"`
 	Status           PersonStatus      `json:"status"`
 	Notes            string            `json:"notes,omitempty"`
-	OffboardedAt     *time.Time        `json:"offboarded_at,omitempty"`
-	OffboardReason   string            `json:"offboard_reason,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
+}
+
+// Address is a postal address. Country is an ISO 3166-1 alpha-2 code.
+type Address struct {
+	Street     string `json:"street"`
+	PostalCode string `json:"postal_code"`
+	City       string `json:"city"`
+	Country    string `json:"country"`
+}
+
+// Line is the address on one line ("Street 1, 1010 Vienna, AT").
+func (a Address) Line() string {
+	parts := []string{}
+	for _, p := range []string{a.Street, joinNonEmpty(a.PostalCode, a.City), a.Country} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func joinNonEmpty(a, b string) string {
+	return strings.TrimSpace(a + " " + b)
 }
 
 // EmergencyContact is who to call if something happens on shift.
@@ -51,7 +74,8 @@ type EmergencyContact struct {
 	Comments string `json:"comments,omitempty"`
 }
 
-// PersonStatus is the volunteer lifecycle status.
+// PersonStatus is the volunteer lifecycle status. Offboarding deletes the
+// person, so there is no "offboarded" status.
 type PersonStatus string
 
 const (
@@ -59,20 +83,16 @@ const (
 	PersonOnboarding PersonStatus = "onboarding"
 	PersonActive     PersonStatus = "active"
 	PersonPaused     PersonStatus = "paused"
-	PersonOffboarded PersonStatus = "offboarded"
 )
 
 // Valid reports whether s is a known status.
 func (s PersonStatus) Valid() bool {
 	switch s {
-	case PersonApplicant, PersonOnboarding, PersonActive, PersonPaused, PersonOffboarded:
+	case PersonApplicant, PersonOnboarding, PersonActive, PersonPaused:
 		return true
 	}
 	return false
 }
-
-// PlaceholderEmailDomain marks backfilled rows that still need a real email.
-const PlaceholderEmailDomain = "@email-required.invalid"
 
 // Department is an organizational unit volunteers join. Each one is backed by
 // an IdP group (GroupName) and carries the module access new members get by
@@ -86,6 +106,7 @@ type Department struct {
 	DefaultRoles []RoleRef  `json:"default_roles"`
 	IdPSyncedAt  *time.Time `json:"idp_synced_at,omitempty"`
 	IdPSyncError string     `json:"idp_sync_error,omitempty"`
+	MemberCount  int        `json:"member_count"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 }
@@ -139,16 +160,6 @@ type ProvisioningJob struct {
 	ExternalID string          `json:"external_id,omitempty"`
 }
 
-// Approval records an HR decision on a draft.
-type Approval struct {
-	ID         uuid.UUID      `json:"id"`
-	DraftID    uuid.UUID      `json:"draft_id"`
-	Decision   ApprovalResult `json:"decision"`
-	Reason     string         `json:"reason,omitempty"`
-	ApprovedBy string         `json:"approved_by"`
-	ApprovedAt time.Time      `json:"approved_at"`
-}
-
 // AuditEvent is the append-only HR audit record. Every state-changing write
 // should produce one.
 type AuditEvent struct {
@@ -173,11 +184,9 @@ const (
 	DraftStateDraft DraftState = "draft"
 	// DraftStateProvisioning: a provisioning job is in flight.
 	DraftStateProvisioning DraftState = "provisioning"
-	// DraftStatePendingApproval: provisioning succeeded, awaiting HR approval.
-	DraftStatePendingApproval DraftState = "pending_approval"
-	// DraftStateActive: approved and announced to the user.
+	// DraftStateActive: completed; the account exists and the person was emailed.
 	DraftStateActive DraftState = "active"
-	// DraftStateRejected: approver denied; a new draft is required to retry.
+	// DraftStateRejected: abandoned; a new draft is required to retry.
 	DraftStateRejected DraftState = "rejected"
 )
 
@@ -186,7 +195,6 @@ func AllDraftStates() []DraftState {
 	return []DraftState{
 		DraftStateDraft,
 		DraftStateProvisioning,
-		DraftStatePendingApproval,
 		DraftStateActive,
 		DraftStateRejected,
 	}
@@ -213,40 +221,26 @@ const (
 	JobStatusFailed    JobStatus = "failed"
 )
 
-// ApprovalResult is HR's final verdict on a draft.
-type ApprovalResult string
-
-const (
-	ApprovalApproved ApprovalResult = "approved"
-	ApprovalRejected ApprovalResult = "rejected"
-)
-
 // -----------------------------------------------------------------------------
 // State machine stub
 // -----------------------------------------------------------------------------
 
 // draftTransitions encodes the legal state transitions:
 //
-//	draft           -> provisioning
-//	provisioning    -> pending_approval | active | rejected | draft
-//	pending_approval -> active | rejected
+//	draft        -> provisioning
+//	provisioning -> active | rejected | draft
 //
-// provisioning -> active is the onboarding-flow "complete" path (HR reviewed
-// on the overview page); provisioning -> draft lets HR retry after a
-// connector failure. Rejected and active are terminal.
+// provisioning -> active is the onboarding "complete" path (HR reviewed on
+// the overview page); provisioning -> draft lets HR retry after a connector
+// failure. Rejected and active are terminal.
 var draftTransitions = map[DraftState]map[DraftState]bool{
 	DraftStateDraft: {
 		DraftStateProvisioning: true,
 	},
 	DraftStateProvisioning: {
-		DraftStatePendingApproval: true,
-		DraftStateActive:          true,
-		DraftStateRejected:        true,
-		DraftStateDraft:           true,
-	},
-	DraftStatePendingApproval: {
 		DraftStateActive:   true,
 		DraftStateRejected: true,
+		DraftStateDraft:    true,
 	},
 	DraftStateActive:   {},
 	DraftStateRejected: {},

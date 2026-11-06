@@ -103,8 +103,10 @@ type AccountInfo struct {
 	Enabled  bool   `json:"enabled"`
 }
 
-// Profile is what HR keeps in sync on an existing account.
+// Profile is what HR keeps in sync on an existing account. A non-empty
+// Username renames the login.
 type Profile struct {
+	Username   string
 	Email      string
 	FirstName  string
 	LastName   string
@@ -120,6 +122,13 @@ type AccountManager interface {
 	SetEnabled(ctx context.Context, userID string, enabled bool) error
 	UpdateProfile(ctx context.Context, userID string, p Profile) error
 	DeleteAccount(ctx context.Context, userID string) error
+}
+
+// UsernameDirectory finds out whether a login name is already in use.
+type UsernameDirectory interface {
+	// UsernameOwner reports whether an account uses the username and, if so,
+	// the HR person id stored on it ("" for accounts HR did not create).
+	UsernameOwner(ctx context.Context, username string) (owner string, found bool, err error)
 }
 
 // IdPProvisioner is the connector the HR service calls. FakeIdP is used in
@@ -141,8 +150,16 @@ type IdPProvisioner interface {
 type FakeIdP struct {
 	logger zerolog.Logger
 
-	mu    sync.Mutex
-	calls []IdPUser
+	mu          sync.Mutex
+	calls       []IdPUser
+	memberships []MembershipChange
+}
+
+// MembershipChange is one UpdateMembership call seen by FakeIdP.
+type MembershipChange struct {
+	UserID string
+	Add    []string
+	Remove []string
 }
 
 // NewFakeIdP returns a FakeIdP that logs each call via the provided logger.
@@ -213,10 +230,20 @@ func (f *FakeIdP) GetAccount(_ context.Context, userID string) (*AccountInfo, er
 	return &AccountInfo{Username: userID, Enabled: true}, nil
 }
 
-// UpdateMembership logs the membership change.
+// UpdateMembership logs and records the membership change.
 func (f *FakeIdP) UpdateMembership(_ context.Context, userID string, add, remove []string) error {
 	f.logger.Info().Str("user", userID).Strs("add", add).Strs("remove", remove).Msg("fake idp membership")
+	f.mu.Lock()
+	f.memberships = append(f.memberships, MembershipChange{UserID: userID, Add: append([]string(nil), add...), Remove: append([]string(nil), remove...)})
+	f.mu.Unlock()
 	return nil
+}
+
+// Memberships returns every UpdateMembership call made so far (tests).
+func (f *FakeIdP) Memberships() []MembershipChange {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]MembershipChange(nil), f.memberships...)
 }
 
 // SetEnabled logs the enable/disable.
@@ -227,8 +254,20 @@ func (f *FakeIdP) SetEnabled(_ context.Context, userID string, enabled bool) err
 
 // UpdateProfile logs the profile change.
 func (f *FakeIdP) UpdateProfile(_ context.Context, userID string, p Profile) error {
-	f.logger.Info().Str("user", userID).Str("email", p.Email).Msg("fake idp update profile")
+	f.logger.Info().Str("user", userID).Str("username", p.Username).Str("email", p.Email).Msg("fake idp update profile")
 	return nil
+}
+
+// UsernameOwner reports usernames from earlier provision calls.
+func (f *FakeIdP) UsernameOwner(_ context.Context, username string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if strings.EqualFold(c.Username, username) {
+			return c.HRPersonID.String(), true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // DeleteAccount logs the deletion.

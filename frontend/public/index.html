@@ -2,14 +2,15 @@
 <html lang="en">
   <head>
     <script>
+      // Apply the cached light/dark choice before first paint (see src/lib/theme.ts).
       (function () {
+        var p = 'system';
         try {
-          var saved = localStorage.getItem('hr-theme');
-          var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
-          if (dark) document.documentElement.classList.add('dark');
-        } catch (e) {
-          /* no-op */
-        }
+          p = localStorage.getItem('cs-theme') || localStorage.getItem('hr-theme') || 'system';
+        } catch (e) {}
+        var dark = p === 'dark' || (p !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('dark', dark);
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
       })();
     </script>
     <meta charset="UTF-8" />

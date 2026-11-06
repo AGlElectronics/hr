@@ -27,6 +27,7 @@ type ProvisionService struct {
 	workspace provisioners.WorkspaceProvisioner
 	audit     *audit.Writer
 	settings  *SettingsService
+	gate      *RoleGateService // nil = no training requirements
 }
 
 // NewProvisionService wires a ProvisionService.
@@ -34,72 +35,8 @@ func NewProvisionService(pool *pgxpool.Pool, drafts *DraftService, people *Peopl
 	return &ProvisionService{pool: pool, drafts: drafts, people: people, idp: idp, workspace: ws, audit: aud, settings: settings}
 }
 
-// Trigger kicks off provisioning for a draft: moves it to "provisioning",
-// invokes both connectors (IdP + workspace), records provisioning_jobs,
-// then transitions to "pending_approval" (or "rejected" on failure).
-//
-// Because the connectors are the local fakes this runs synchronously and
-// cannot really fail; the shape stays async-friendly so the move to real
-// background workers is a lift rather than a rewrite.
-func (s *ProvisionService) Trigger(ctx context.Context, actor string, draftID uuid.UUID) (*domain.EmploymentDraft, []domain.ProvisioningJob, error) {
-	draft, err := s.drafts.Get(ctx, draftID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if draft.State != domain.DraftStateDraft {
-		return nil, nil, httperror.Conflict(fmt.Sprintf("draft must be in state 'draft' (was %q)", draft.State))
-	}
-	person, err := s.people.Get(ctx, draft.PersonID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if person.EmailMissing {
-		return nil, nil, httperror.Validation("person has no real email yet; set one before provisioning",
-			map[string]string{"email": "required"})
-	}
-	if person.Status == domain.PersonApplicant {
-		if err := s.people.SetStatus(ctx, person.ID, domain.PersonOnboarding); err != nil {
-			return nil, nil, err
-		}
-	}
-
-	// draft -> provisioning
-	if _, err := s.drafts.Transition(ctx, draft.ID, domain.DraftStateProvisioning); err != nil {
-		return nil, nil, err
-	}
-	if err := s.audit.Record(ctx, actor, "draft.provision.start", "employment_draft", draft.ID, nil); err != nil {
-		return nil, nil, err
-	}
-
-	jobs := make([]domain.ProvisioningJob, 0, 2)
-	idpJob, idpErr := s.runIdP(ctx, draft, person)
-	jobs = append(jobs, idpJob)
-	wsJob, wsErr := s.runWorkspace(ctx, draft, person)
-	jobs = append(jobs, wsJob)
-
-	// Decide the next state based on connector outcomes.
-	next := domain.DraftStatePendingApproval
-	if idpErr != nil || wsErr != nil {
-		next = domain.DraftStateRejected
-	}
-	updated, err := s.drafts.Transition(ctx, draft.ID, next)
-	if err != nil {
-		return nil, jobs, err
-	}
-	if err := s.audit.Record(ctx, actor, "draft.provision.finish", "employment_draft", draft.ID, map[string]any{
-		"state":         updated.State,
-		"idp_err":       errString(idpErr),
-		"workspace_err": errString(wsErr),
-	}); err != nil {
-		return nil, jobs, err
-	}
-	return updated, jobs, nil
-}
-
-func (s *ProvisionService) runIdP(ctx context.Context, draft *domain.EmploymentDraft, person *domain.Person) (domain.ProvisioningJob, error) {
-	job, _, err := s.runIdPWith(ctx, draft, person, nil, false)
-	return job, err
-}
+// SetRoleGate holds roles with unmet training requirements back at Complete.
+func (s *ProvisionService) SetRoleGate(g *RoleGateService) { s.gate = g }
 
 func (s *ProvisionService) runIdPWith(ctx context.Context, draft *domain.EmploymentDraft, person *domain.Person, extraGroups []string, passwordSetup bool) (domain.ProvisioningJob, provisioners.IdPResult, error) {
 	job := s.beginJob(ctx, draft.ID, domain.TargetIdP)
@@ -123,10 +60,11 @@ func (s *ProvisionService) runIdPWith(ctx context.Context, draft *domain.Employm
 		s.finishJob(ctx, &job, domain.JobStatusFailed, err.Error(), "")
 		return job, provisioners.IdPResult{}, err
 	}
+	username := firstNonEmpty(person.Username, UsernameFor(settings.UsernameTemplate, person))
 	res, err := s.idp.Provision(ctx, provisioners.IdPUser{
 		HRPersonID:  person.ID,
 		ExternalID:  ext,
-		Username:    UsernameFor(settings.UsernameTemplate, person),
+		Username:    username,
 		DisplayName: person.DisplayName,
 		FirstName:   person.FirstName,
 		LastName:    person.LastName,
@@ -139,7 +77,7 @@ func (s *ProvisionService) runIdPWith(ctx context.Context, draft *domain.Employm
 	if err != nil {
 		var taken *provisioners.UsernameTakenError
 		if errors.As(err, &taken) {
-			err = fmt.Errorf("%w; change their nickname (or the username template in Settings) and try again", err)
+			err = fmt.Errorf("%w; change their nickname and try again", err)
 		}
 		s.finishJob(ctx, &job, domain.JobStatusFailed, err.Error(), "")
 		return job, res, err
@@ -171,6 +109,8 @@ type CompleteResult struct {
 	PasswordSetupEmailSent bool                     `json:"password_setup_email_sent"`
 	PasswordSetupError     string                   `json:"password_setup_error,omitempty"`
 	TemporaryPassword      string                   `json:"temporary_password,omitempty"`
+	// PendingGrants are roles left out until the person finishes training.
+	PendingGrants []PendingGrant `json:"pending_grants"`
 }
 
 // Complete finishes an onboarding draft in one step after HR reviewed it:
@@ -204,10 +144,23 @@ func (s *ProvisionService) Complete(ctx context.Context, actor string, draftID u
 		return nil, httperror.Internal(err)
 	}
 
+	// A new person has no account yet, so every gated role waits unless an
+	// earlier account already holds the qualifications.
+	ext, err := latestExternalID(ctx, s.pool, person.ID)
+	if err != nil {
+		return nil, err
+	}
+	grantNow, pending, err := s.gate.Split(ctx, ext, draft.Roles)
+	if err != nil {
+		return nil, err
+	}
+	gated := *draft
+	gated.Roles = grantNow
+
 	if _, err := s.drafts.Transition(ctx, draft.ID, domain.DraftStateProvisioning); err != nil {
 		return nil, err
 	}
-	idpJob, idpRes, idpErr := s.runIdPWith(ctx, draft, person, []string{deptGroup}, true)
+	idpJob, idpRes, idpErr := s.runIdPWith(ctx, &gated, person, []string{deptGroup}, true)
 	jobs := []domain.ProvisioningJob{idpJob}
 	var wsErr error
 	if idpErr == nil {
@@ -218,7 +171,7 @@ func (s *ProvisionService) Complete(ctx context.Context, actor string, draftID u
 
 	res := &CompleteResult{Jobs: jobs, GroupsApplied: idpRes.GroupsApplied, AccountCreated: idpRes.Created,
 		PasswordSetupEmailSent: idpRes.PasswordSetupEmailSent, PasswordSetupError: idpRes.PasswordSetupError,
-		TemporaryPassword: idpRes.TemporaryPassword}
+		TemporaryPassword: idpRes.TemporaryPassword, PendingGrants: []PendingGrant{}}
 
 	if failure := firstNonEmpty(errString(idpErr), errString(wsErr)); failure != "" {
 		res.Error = failure
@@ -236,15 +189,23 @@ func (s *ProvisionService) Complete(ctx context.Context, actor string, draftID u
 	if err := s.people.SetStatus(ctx, person.ID, domain.PersonActive); err != nil {
 		return nil, err
 	}
-	if _, err := s.pool.Exec(ctx, `
-INSERT INTO approvals (id, draft_id, decision, reason, approved_by, approved_at)
-VALUES ($1, $2, 'approved', 'verified on the onboarding overview', $3, now())`, uuid.New(), draft.ID, actor); err != nil {
-		return nil, httperror.Internal(err)
+	pendingKeys := make([]string, 0, len(pending))
+	for _, r := range pending {
+		pendingKeys = append(pendingKeys, r.RoleName)
+	}
+	if len(pending) > 0 {
+		if err := s.gate.RecordPending(ctx, person.ID, draft.ID, pending); err != nil {
+			return nil, err
+		}
+		if res.PendingGrants, err = s.gate.WaitingForPerson(ctx, person.ID); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.audit.Record(ctx, actor, "onboarding.complete", "employment_draft", draft.ID, map[string]any{
 		"person_id":        person.ID,
 		"groups":           idpRes.GroupsApplied,
 		"setup_email_sent": idpRes.PasswordSetupEmailSent,
+		"pending_roles":    pendingKeys,
 	}); err != nil {
 		return nil, err
 	}

@@ -111,7 +111,16 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	den := denlink.New(pool, denlink.Config{Slug: "hr", Version: Version, InternalURL: cfg.DenInternalURL}, logger)
 	go den.Run(ctx)
 
+	gate := httpx.NewRoleGate(cfg, pool, idp, logger)
+	if gate.Active() {
+		logger.Info().Str("holdings_url", cfg.LearnHoldingsURL).Dur("interval", cfg.RoleGateInterval).Msg("training requirements enforced")
+		go gate.Run(ctx, cfg.RoleGateInterval)
+	} else {
+		logger.Warn().Msg("LEARN_HOLDINGS_URL/LEARN_SERVICE_TOKEN not set — training requirements are not enforced")
+	}
+
 	router := httpx.NewRouter(httpx.Deps{
+		RoleGate:     gate,
 		Config:       cfg,
 		Pool:         pool,
 		Logger:       logger,

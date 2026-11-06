@@ -4,9 +4,11 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import { listDepartments } from '@/api/departments';
 import { getOnboarding, startOnboarding, updateOnboardingDetails } from '@/api/onboarding';
-import { getPerson, type Person } from '@/api/people';
+import { EMPTY_ADDRESS, getPerson, type Person } from '@/api/people';
 import { OnboardingSteps } from '@/components/OnboardingSteps';
 import { PersonForm } from '@/components/PersonForm';
+import { useDebugMode } from '@/lib/debug';
+import { useRoleLabels } from '@/lib/roles';
 
 /** Values the dashboard quick start can hand to a new onboarding. */
 export type OnboardingPrefill = {
@@ -40,7 +42,7 @@ export function OnboardingDetailsPage() {
           first_name: search.first_name ?? '',
           last_name: search.last_name ?? '',
           email: search.email ?? '',
-          email_missing: false,
+          address: EMPTY_ADDRESS,
           social_handles: {},
           emergency_contact: {},
         } as unknown as Person)
@@ -76,6 +78,8 @@ function DetailsForm({
   const departments = useQuery({ queryKey: ['departments'], queryFn: listDepartments });
   const [departmentId, setDepartmentId] = useState(initialDept);
   const dept = departments.data?.items.find((d) => d.id === departmentId);
+  const roles = useRoleLabels();
+  const debug = useDebugMode();
 
   const save = useMutation({
     mutationFn: (personInput: Parameters<typeof startOnboarding>[0]['person']) =>
@@ -101,11 +105,10 @@ function DetailsForm({
   }
 
   const deptSection = (
-    <fieldset className="rounded-lg border-2 border-primary/40 p-4">
+    <fieldset className="rounded-lg border border-border p-4">
       <legend className="px-1 text-sm font-semibold">Department</legend>
       <p className="mb-3 text-xs text-muted-foreground">
-        The department that approved this volunteer. They join its group and get its default access, which you can
-        adjust on the next page.
+        The department this volunteer joins. They get its default access, which you can adjust on the next page.
       </p>
       {departments.data?.items.length === 0 ? (
         <p className="text-sm">
@@ -139,12 +142,11 @@ function DetailsForm({
             <div className="rounded-md bg-muted/60 p-3 text-xs">
               {dept.description && <p className="mb-1">{dept.description}</p>}
               <p>
-                Group <code className="font-mono">{dept.group_name}</code>
-                {' · '}
                 {dept.default_roles.length === 0
-                  ? 'no default access'
-                  : `default access: ${dept.default_roles.map((r) => r.role_name).join(', ')}`}
+                  ? 'No default access'
+                  : `Default access: ${roles.grouped(dept.default_roles.map((r) => r.role_name))}`}
               </p>
+              {debug && <p className="mt-1 font-mono text-[11px] text-muted-foreground">group {dept.group_name}</p>}
             </div>
           )}
         </div>

@@ -78,10 +78,13 @@ func (h *peopleHandler) update(w http.ResponseWriter, r *http.Request) {
 	out := struct {
 		*domain.Person
 		IdPSyncError string `json:"idp_sync_error,omitempty"`
+		Warning      string `json:"warning,omitempty"`
 	}{Person: p}
-	if err := h.lifecycle.SyncProfile(r.Context(), p); err != nil {
+	warning, err := h.lifecycle.SyncProfile(r.Context(), current, p)
+	if err != nil {
 		out.IdPSyncError = err.Error()
 	}
+	out.Warning = warning
 	writeJSON(w, http.StatusOK, out)
 }
 

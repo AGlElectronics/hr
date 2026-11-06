@@ -3,7 +3,6 @@ import { apiRequest } from './client';
 export type DraftState =
   | 'draft'
   | 'provisioning'
-  | 'pending_approval'
   | 'active'
   | 'rejected';
 

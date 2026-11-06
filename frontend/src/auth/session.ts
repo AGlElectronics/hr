@@ -61,7 +61,12 @@ export function installSessionSync(): void {
     void mgr.removeUser().finally(goToLogin);
   };
   mgr.events.addUserSignedOut(endSession);
-  mgr.events.addUserSessionChanged(() => window.location.reload());
+  // Same person, new Keycloak session (signed out and back in elsewhere): adopt
+  // it silently. A reload would loop, because the stored user keeps the old
+  // session_state and the monitor reports "changed" again on every load.
+  mgr.events.addUserSessionChanged(() => {
+    void mgr.signinSilent().catch(endSession);
+  });
   mgr.events.addSilentRenewError((err) => {
     if (/login_required|invalid_grant|session not active/i.test(String(err?.message ?? err))) endSession();
   });

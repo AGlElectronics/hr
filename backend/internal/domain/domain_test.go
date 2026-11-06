@@ -10,10 +10,9 @@ func TestCanTransition_Allowed(t *testing.T) {
 		from, to DraftState
 	}{
 		{DraftStateDraft, DraftStateProvisioning},
-		{DraftStateProvisioning, DraftStatePendingApproval},
+		{DraftStateProvisioning, DraftStateActive},
 		{DraftStateProvisioning, DraftStateRejected},
-		{DraftStatePendingApproval, DraftStateActive},
-		{DraftStatePendingApproval, DraftStateRejected},
+		{DraftStateProvisioning, DraftStateDraft},
 	}
 	for _, c := range cases {
 		if !CanTransition(c.from, c.to) {
@@ -31,7 +30,6 @@ func TestCanTransition_Disallowed(t *testing.T) {
 	cases := []struct {
 		from, to DraftState
 	}{
-		{DraftStateDraft, DraftStatePendingApproval},
 		{DraftStateDraft, DraftStateActive},
 		{DraftStateActive, DraftStateRejected},
 		{DraftStateRejected, DraftStateDraft},

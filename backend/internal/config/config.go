@@ -53,6 +53,24 @@ type Config struct {
 	// RoleCatalogSources: "stash=http://…/api/role-catalog,events=…".
 	RoleCatalogSources string
 
+	// QualificationCatalogSources: "learn=http://…/api/qualification-catalog".
+	QualificationCatalogSources string
+	// LearnHoldingsURL + LearnServiceToken let HR ask Learn who holds which
+	// qualification. Role gating is off when either is empty.
+	LearnHoldingsURL  string
+	LearnServiceToken string
+
+	// OffboardHooks are modules told when someone is offboarded, as
+	// comma-separated "url|token" entries (e.g. the wiki orphaning the
+	// person's private space). Failures become warnings, never blockers.
+	OffboardHooks string
+	// DepartmentHooks are modules told when a department is created or
+	// renamed (e.g. Tasks, which keeps one space per department), in the
+	// same comma-separated "url|token" format as OffboardHooks.
+	DepartmentHooks string
+	// RoleGateInterval is how often pending role grants are re-checked.
+	RoleGateInterval time.Duration
+
 	// SMTP for HR's own notices (e.g. "your account was deleted"). Empty
 	// host disables them; HR then shows a warning instead.
 	SMTPHost     string
@@ -75,38 +93,44 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		AppEnv:                   getEnv("APP_ENV", "development"),
-		AppBaseURL:               getEnv("APP_BASE_URL", "http://localhost:8080"),
-		HTTPAddr:                 getEnv("HTTP_ADDR", ":8080"),
-		DatabaseURL:              getEnv("DATABASE_URL", ""),
-		S3Endpoint:               getEnv("S3_ENDPOINT", ""),
-		S3Bucket:                 getEnv("S3_BUCKET", "hr-data-dev"),
-		S3AccessKeyID:            getEnv("S3_ACCESS_KEY_ID", ""),
-		S3SecretAccessKey:        getEnv("S3_SECRET_ACCESS_KEY", ""),
-		S3Region:                 getEnv("S3_REGION", "us-east-1"),
-		S3UsePathStyle:           getEnvBool("S3_USE_PATH_STYLE", true),
-		AuthMode:                 strings.ToLower(getEnv("AUTH_MODE", AuthModeDev)),
-		DevDefaultUser:           getEnv("DEV_DEFAULT_USER", "dev-hr-admin"),
-		OIDCIssuerURL:            getEnv("OIDC_ISSUER_URL", ""),
-		OIDCClientID:             getEnv("OIDC_CLIENT_ID", ""),
-		OIDCAudience:             getEnv("OIDC_AUDIENCE", ""),
-		AccessGroups:             splitCSV(getEnv("HR_ACCESS_GROUPS", "hr-admin")),
-		KeycloakBaseURL:          getEnv("KEYCLOAK_BASE_URL", ""),
-		KeycloakRealm:            getEnv("KEYCLOAK_REALM", "conservices"),
-		KeycloakClientID:         getEnv("KEYCLOAK_CLIENT_ID", "hr-provisioner"),
-		KeycloakClientSecret:     getEnv("KEYCLOAK_CLIENT_SECRET", ""),
-		KeycloakSetupClientID:    getEnv("KEYCLOAK_SETUP_CLIENT_ID", ""),
-		KeycloakSetupRedirectURI: getEnv("KEYCLOAK_SETUP_REDIRECT_URI", ""),
-		RoleCatalogSources:       getEnv("ROLE_CATALOG_SOURCES", ""),
-		SMTPHost:                 getEnv("SMTP_HOST", ""),
-		SMTPPort:                 getEnvInt("SMTP_PORT", 587),
-		SMTPUsername:             getEnv("SMTP_USERNAME", ""),
-		SMTPPassword:             getEnv("SMTP_PASSWORD", ""),
-		SMTPFrom:                 getEnv("SMTP_FROM", ""),
-		SMTPFromName:             getEnv("SMTP_FROM_NAME", ""),
-		DenInternalURL:           getEnv("DEN_INTERNAL_URL", ""),
-		CORSAllowedOrigins:       splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3003")),
-		ShutdownTimeout:          getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
+		AppEnv:                      getEnv("APP_ENV", "development"),
+		AppBaseURL:                  getEnv("APP_BASE_URL", "http://localhost:8080"),
+		HTTPAddr:                    getEnv("HTTP_ADDR", ":8080"),
+		DatabaseURL:                 getEnv("DATABASE_URL", ""),
+		S3Endpoint:                  getEnv("S3_ENDPOINT", ""),
+		S3Bucket:                    getEnv("S3_BUCKET", "hr-data-dev"),
+		S3AccessKeyID:               getEnv("S3_ACCESS_KEY_ID", ""),
+		S3SecretAccessKey:           getEnv("S3_SECRET_ACCESS_KEY", ""),
+		S3Region:                    getEnv("S3_REGION", "us-east-1"),
+		S3UsePathStyle:              getEnvBool("S3_USE_PATH_STYLE", true),
+		AuthMode:                    strings.ToLower(getEnv("AUTH_MODE", AuthModeDev)),
+		DevDefaultUser:              getEnv("DEV_DEFAULT_USER", "dev-hr-admin"),
+		OIDCIssuerURL:               getEnv("OIDC_ISSUER_URL", ""),
+		OIDCClientID:                getEnv("OIDC_CLIENT_ID", ""),
+		OIDCAudience:                getEnv("OIDC_AUDIENCE", ""),
+		AccessGroups:                splitCSV(getEnv("HR_ACCESS_GROUPS", "hr-admin")),
+		KeycloakBaseURL:             getEnv("KEYCLOAK_BASE_URL", ""),
+		KeycloakRealm:               getEnv("KEYCLOAK_REALM", "conservices"),
+		KeycloakClientID:            getEnv("KEYCLOAK_CLIENT_ID", "hr-provisioner"),
+		KeycloakClientSecret:        getEnv("KEYCLOAK_CLIENT_SECRET", ""),
+		KeycloakSetupClientID:       getEnv("KEYCLOAK_SETUP_CLIENT_ID", ""),
+		KeycloakSetupRedirectURI:    getEnv("KEYCLOAK_SETUP_REDIRECT_URI", ""),
+		RoleCatalogSources:          getEnv("ROLE_CATALOG_SOURCES", ""),
+		QualificationCatalogSources: getEnv("QUALIFICATION_CATALOG_SOURCES", ""),
+		LearnHoldingsURL:            getEnv("LEARN_HOLDINGS_URL", ""),
+		LearnServiceToken:           getEnv("LEARN_SERVICE_TOKEN", ""),
+		OffboardHooks:               getEnv("OFFBOARD_HOOKS", ""),
+		DepartmentHooks:             getEnv("DEPARTMENT_HOOKS", ""),
+		RoleGateInterval:            getEnvDuration("ROLE_GATE_INTERVAL", time.Minute),
+		SMTPHost:                    getEnv("SMTP_HOST", ""),
+		SMTPPort:                    getEnvInt("SMTP_PORT", 587),
+		SMTPUsername:                getEnv("SMTP_USERNAME", ""),
+		SMTPPassword:                getEnv("SMTP_PASSWORD", ""),
+		SMTPFrom:                    getEnv("SMTP_FROM", ""),
+		SMTPFromName:                getEnv("SMTP_FROM_NAME", ""),
+		DenInternalURL:              getEnv("DEN_INTERNAL_URL", ""),
+		CORSAllowedOrigins:          splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3003")),
+		ShutdownTimeout:             getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -166,6 +190,12 @@ func (c *Config) validate() error {
 // KeycloakConfigured reports whether real IdP provisioning should be wired.
 func (c *Config) KeycloakConfigured() bool {
 	return c.KeycloakBaseURL != "" && c.KeycloakClientSecret != ""
+}
+
+// RoleGateConfigured reports whether HR can ask Learn for qualification
+// holdings, i.e. whether training requirements are enforced.
+func (c *Config) RoleGateConfigured() bool {
+	return c.LearnHoldingsURL != "" && c.LearnServiceToken != ""
 }
 
 func (c *Config) S3Configured() bool {

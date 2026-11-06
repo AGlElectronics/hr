@@ -70,6 +70,20 @@ type Config struct {
 	InternalURL string
 }
 
+// Asset roles the module copies from Den and serves itself.
+const (
+	AssetLogo            = "logo"
+	AssetLoginBackground = "login-background"
+)
+
+var syncedAssets = []string{AssetLogo, AssetLoginBackground}
+
+type asset struct {
+	id    string
+	data  []byte
+	ctype string
+}
+
 // Client is safe for concurrent use.
 type Client struct {
 	pool *pgxpool.Pool
@@ -77,16 +91,14 @@ type Client struct {
 	http *http.Client
 	log  zerolog.Logger
 
-	mu       sync.RWMutex
-	bundle   *Bundle
-	logo     []byte
-	logoType string
-	logoID   string
+	mu     sync.RWMutex
+	bundle *Bundle
+	assets map[string]asset
 }
 
 // New returns a Client; call Run to start syncing.
 func New(pool *pgxpool.Pool, cfg Config, log zerolog.Logger) *Client {
-	return &Client{pool: pool, cfg: cfg, http: &http.Client{Timeout: 10 * time.Second}, log: log}
+	return &Client{pool: pool, cfg: cfg, http: &http.Client{Timeout: 30 * time.Second}, log: log, assets: map[string]asset{}}
 }
 
 // ErrNotPaired is returned when an operation needs a pairing.
@@ -233,12 +245,13 @@ func (c *Client) Unpair(ctx context.Context) error {
 		return err
 	}
 	c.mu.Lock()
-	c.bundle, c.logo, c.logoType, c.logoID = nil, nil, "", ""
+	c.bundle, c.assets = nil, map[string]asset{}
 	c.mu.Unlock()
 	return nil
 }
 
-// Sync pulls the bundle (and the logo when it changed) from Den.
+// Sync pulls the bundle (and the logo and login background when they
+// changed) from Den.
 func (c *Client) Sync(ctx context.Context) error {
 	l, err := c.load(ctx)
 	if err != nil {
@@ -248,8 +261,10 @@ func (c *Client) Sync(ctx context.Context) error {
 		return ErrNotPaired
 	}
 	b, raw, err := c.fetchBundle(ctx, l)
-	if err == nil {
-		err = c.syncLogo(ctx, l, b.Brand.Assets["logo"])
+	for _, role := range syncedAssets {
+		if err == nil {
+			err = c.syncAsset(ctx, l, role, b.Brand.Assets[role])
+		}
 	}
 	if err != nil {
 		_, _ = c.pool.Exec(ctx, `UPDATE den_link SET last_error = $1 WHERE id = 1`, err.Error())
@@ -265,9 +280,24 @@ func (c *Client) Sync(ctx context.Context) error {
 }
 
 func (c *Client) get(ctx context.Context, l *link, path string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, l.baseURL+path, nil)
+	return c.send(ctx, l, http.MethodGet, path, nil)
+}
+
+func (c *Client) send(ctx context.Context, l *link, method, path string, body any) (*http.Response, error) {
+	var rd io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		rd = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, l.baseURL+path, rd)
 	if err != nil {
 		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+l.credential)
 	res, err := c.http.Do(req)
@@ -305,30 +335,134 @@ func (c *Client) fetchBundle(ctx context.Context, l *link) (*Bundle, []byte, err
 	return &b, raw, nil
 }
 
-func (c *Client) syncLogo(ctx context.Context, l *link, id string) error {
+func (c *Client) syncAsset(ctx context.Context, l *link, role, id string) error {
 	c.mu.RLock()
-	same := id == c.logoID && (id == "" || c.logo != nil)
+	_, have := c.assets[role]
+	same := id == c.assets[role].id && (id == "" || have)
 	c.mu.RUnlock()
 	if same {
 		return nil
 	}
-	var data []byte
-	ctype := ""
-	if id != "" {
-		res, err := c.get(ctx, l, "/api/v1/integrations/branding/assets/"+url.PathEscape(id))
-		if err != nil {
-			return err
-		}
-		defer func() { _ = res.Body.Close() }()
-		if data, err = io.ReadAll(io.LimitReader(res.Body, 10<<20)); err != nil {
-			return err
-		}
-		ctype = res.Header.Get("Content-Type")
+	if id == "" {
+		c.mu.Lock()
+		delete(c.assets, role)
+		c.mu.Unlock()
+		return nil
+	}
+	res, err := c.get(ctx, l, "/api/v1/integrations/branding/assets/"+url.PathEscape(id))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = res.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(res.Body, 10<<20))
+	if err != nil {
+		return err
 	}
 	c.mu.Lock()
-	c.logo, c.logoType, c.logoID = data, ctype, id
+	c.assets[role] = asset{id: id, data: data, ctype: res.Header.Get("Content-Type")}
 	c.mu.Unlock()
 	return nil
+}
+
+// Preferences are a person's UI choices. Den stores them so every app shares
+// them; Synced is false when the module is standalone or Den is unreachable,
+// and then the frontend keeps its locally cached choice.
+type Preferences struct {
+	Theme string `json:"theme"`
+	// UpdatedAt is null until the person first picks a theme anywhere.
+	UpdatedAt *string `json:"updated_at"`
+	Synced    bool    `json:"synced"`
+}
+
+// Preferences loads a person's preferences from Den.
+func (c *Client) Preferences(ctx context.Context, issuer, subject string) (Preferences, error) {
+	l, err := c.load(ctx)
+	if err != nil || l == nil {
+		return Preferences{Theme: "system"}, err
+	}
+	q := url.Values{"issuer": {issuer}, "subject": {subject}}
+	res, err := c.get(ctx, l, "/api/v1/integrations/user-preferences?"+q.Encode())
+	if err != nil {
+		return Preferences{Theme: "system"}, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	p := Preferences{Theme: "system"}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<16)).Decode(&p); err != nil {
+		return Preferences{Theme: "system"}, fmt.Errorf("unexpected preferences from Den: %w", err)
+	}
+	p.Synced = true
+	return p, nil
+}
+
+// SetPreferences saves a person's theme in Den.
+func (c *Client) SetPreferences(ctx context.Context, issuer, subject, theme string) (Preferences, error) {
+	l, err := c.load(ctx)
+	if err != nil {
+		return Preferences{}, err
+	}
+	if l == nil {
+		return Preferences{}, ErrNotPaired
+	}
+	res, err := c.send(ctx, l, http.MethodPut, "/api/v1/integrations/user-preferences",
+		map[string]string{"issuer": issuer, "subject": subject, "theme": theme})
+	if err != nil {
+		return Preferences{}, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var p Preferences
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<16)).Decode(&p); err != nil {
+		return Preferences{}, fmt.Errorf("unexpected preferences from Den: %w", err)
+	}
+	p.Synced = true
+	return p, nil
+}
+
+// Identity returns the signed-in person's IdP issuer and subject; ok is false
+// when the request has none (preferences then stay local to the browser).
+type Identity func(r *http.Request) (issuer, subject string, ok bool)
+
+// PreferencesHandler serves GET and PUT <api>/me/preferences.
+func (c *Client) PreferencesHandler(identity Identity) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		issuer, subject, ok := identity(r)
+		if r.Method == http.MethodGet {
+			p := Preferences{Theme: "system"}
+			if ok {
+				var err error
+				if p, err = c.Preferences(r.Context(), issuer, subject); err != nil {
+					c.log.Warn().Err(err).Msg("den link: load preferences failed")
+				}
+			}
+			writeJSON(w, http.StatusOK, p)
+			return
+		}
+		var in struct {
+			Theme string `json:"theme"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+			return
+		}
+		switch in.Theme {
+		case "system", "light", "dark":
+		default:
+			writeError(w, http.StatusUnprocessableEntity, "validation_failed", "theme must be system, light or dark")
+			return
+		}
+		if !ok {
+			writeJSON(w, http.StatusOK, Preferences{Theme: in.Theme})
+			return
+		}
+		p, err := c.SetPreferences(r.Context(), issuer, subject, in.Theme)
+		if err != nil {
+			if !errors.Is(err, ErrNotPaired) {
+				c.log.Warn().Err(err).Msg("den link: save preferences failed")
+			}
+			writeJSON(w, http.StatusOK, Preferences{Theme: in.Theme})
+			return
+		}
+		writeJSON(w, http.StatusOK, p)
+	}
 }
 
 func denError(res *http.Response) string {
@@ -350,16 +484,19 @@ func denError(res *http.Response) string {
 // Theme as CSS variables; when standalone, Theme is empty and the module's
 // own defaults apply.
 type PublicBrand struct {
-	Source           string         `json:"source"` // "den" | "standalone"
-	Revision         int            `json:"revision"`
-	OrganizationName string         `json:"organization_name"`
-	LogoURL          string         `json:"logo_url,omitempty"`
-	Theme            map[string]any `json:"theme"`
-	Copy             map[string]any `json:"copy"`
+	Source             string         `json:"source"` // "den" | "standalone"
+	Revision           int            `json:"revision"`
+	OrganizationName   string         `json:"organization_name"`
+	LogoURL            string         `json:"logo_url,omitempty"`
+	LoginBackgroundURL string         `json:"login_background_url,omitempty"`
+	Theme              map[string]any `json:"theme"`
+	// Copy includes login_layout ("panel" | "centered") and login_caption.
+	Copy map[string]any `json:"copy"`
 }
 
-// BrandHandler serves PublicBrand. logoPath is where LogoHandler is mounted.
-func (c *Client) BrandHandler(logoPath string) http.HandlerFunc {
+// BrandHandler serves PublicBrand. assetBase is where AssetHandler is
+// mounted: <assetBase>/logo and <assetBase>/login-background.
+func (c *Client) BrandHandler(assetBase string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		out := PublicBrand{Source: "standalone", Theme: map[string]any{}, Copy: map[string]any{}}
 		if b := c.Bundle(); b != nil {
@@ -370,38 +507,44 @@ func (c *Client) BrandHandler(logoPath string) http.HandlerFunc {
 			if b.Brand.Copy != nil {
 				out.Copy = b.Brand.Copy
 			}
-			out.LogoURL = c.LogoURL(logoPath)
+			out.LogoURL = c.AssetURL(assetBase, AssetLogo)
+			out.LoginBackgroundURL = c.AssetURL(assetBase, AssetLoginBackground)
 		}
 		w.Header().Set("Cache-Control", "no-cache")
 		writeJSON(w, http.StatusOK, out)
 	}
 }
 
-// LogoURL is logoPath with a cache-busting version, or "" without a Den logo.
-func (c *Client) LogoURL(logoPath string) string {
+// AssetURL is <assetBase>/<role> with a cache-busting version, or "" when
+// Den has no such asset.
+func (c *Client) AssetURL(assetBase, role string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.logo == nil {
+	a, ok := c.assets[role]
+	if !ok {
 		return ""
 	}
-	return logoPath + "?v=" + url.QueryEscape(c.logoID)
+	return assetBase + "/" + role + "?v=" + url.QueryEscape(a.id)
 }
 
-// LogoHandler serves Den's logo (proxied, so browsers never talk to Den).
-func (c *Client) LogoHandler(w http.ResponseWriter, _ *http.Request) {
+// AssetHandler serves a copied Den asset (so browsers never talk to Den).
+// Mount it at <assetBase>/{role}; role is read from the last path segment.
+func (c *Client) AssetHandler(w http.ResponseWriter, r *http.Request) {
+	role := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 	c.mu.RLock()
-	data, ctype := c.logo, c.logoType
+	a, ok := c.assets[role]
 	c.mu.RUnlock()
-	if data == nil {
-		writeError(w, http.StatusNotFound, "not_found", "no logo")
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "no such brand asset")
 		return
 	}
+	ctype := a.ctype
 	if ctype == "" {
 		ctype = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	_, _ = w.Write(data)
+	_, _ = w.Write(a.data)
 }
 
 // Routes for admins: GET status, POST pair, POST sync, DELETE unpair.

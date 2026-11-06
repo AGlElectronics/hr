@@ -29,6 +29,8 @@ type Role struct {
 	Scope       string   `json:"scope"`
 	Permissions []string `json:"permissions"`
 	Note        string   `json:"note,omitempty"`
+	// Default roles are ticked for every new onboarding; HR can untick them.
+	Default bool `json:"default,omitempty"`
 }
 
 // Module is a module's catalog plus fetch status.
@@ -73,17 +75,17 @@ func Self() Module {
 	return Module{
 		Module:      "hr",
 		DisplayName: "HR",
-		Description: "Crew onboarding and access provisioning.",
+		Description: "Onboarding, people and access.",
 		Source:      "self",
 		Status:      "ok",
 		Roles: []Role{{
 			Key:         "admin",
 			Label:       "HR admin",
-			Description: "Create people, draft access, provision and approve.",
+			Description: "Onboard and offboard people, manage departments and access.",
 			Group:       "hr-admin",
 			Assignable:  true,
 			Scope:       "organization",
-			Permissions: []string{"people.manage", "drafts.manage", "provision.run", "approvals.decide"},
+			Permissions: []string{"people.manage", "drafts.manage", "provision.run"},
 		}},
 	}
 }
@@ -111,6 +113,24 @@ func (f *Fetcher) FetchAll(ctx context.Context) []Module {
 	}
 	wg.Wait()
 	return append([]Module{Self()}, out...)
+}
+
+// DefaultRoles are the assignable roles modules mark as on by default, as
+// "<module>:<key>" with their group (modules that fail to load are skipped).
+func DefaultRoles(mods []Module) []Role {
+	out := []Role{}
+	for _, m := range mods {
+		if m.Status != "ok" {
+			continue
+		}
+		for _, r := range m.Roles {
+			if r.Default && r.Assignable && r.Group != "" {
+				r.Key = m.Module + ":" + r.Key
+				out = append(out, r)
+			}
+		}
+	}
+	return out
 }
 
 func fetchOne(ctx context.Context, client *http.Client, src Source) Module {

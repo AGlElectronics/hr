@@ -9,11 +9,12 @@ import (
 
 func TestSlug(t *testing.T) {
 	cases := map[string]string{
-		"Fluffy Tail":   "fluffy-tail",
-		"  Zoë  ":       "zoe",
-		"Ünïcødé--Fox!": "unicde-fox",
-		"a..b__c":       "a.b_c",
-		"":              "",
+		"Fluffy Tail":       "fluffy.tail",
+		"  Zoë  ":           "zoe",
+		"Ünïcødé--Fox!":     "unicde-fox",
+		"a..b__c":           "a.b_c",
+		"Anna-Lena O'Brien": "anna-lena.obrien",
+		"":                  "",
 	}
 	for in, want := range cases {
 		if got := Slug(in); got != want {
@@ -24,7 +25,7 @@ func TestSlug(t *testing.T) {
 
 func TestUsernameFor(t *testing.T) {
 	p := &domain.Person{FirstName: "Jane", LastName: "Doe", Nickname: "Sparky Paws", Email: "Jane@Example.org"}
-	if got := UsernameFor("{nickname}", p); got != "sparky-paws" {
+	if got := UsernameFor("{nickname}", p); got != "sparky.paws" {
 		t.Errorf("nickname template: %q", got)
 	}
 	if got := UsernameFor("{first}.{last}", p); got != "jane.doe" {
@@ -35,8 +36,8 @@ func TestUsernameFor(t *testing.T) {
 		t.Errorf("fallback without nickname: %q", got)
 	}
 	p.FirstName, p.LastName = "", ""
-	if got := UsernameFor("{nickname}", p); got != "jane@example.org" {
-		t.Errorf("fallback to email: %q", got)
+	if got := UsernameFor("{nickname}", p); got != "" {
+		t.Errorf("no name should give no username: %q", got)
 	}
 }
 

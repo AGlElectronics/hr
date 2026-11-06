@@ -5,6 +5,7 @@ import { assignRoles } from '@/api/drafts';
 import { getOnboarding } from '@/api/onboarding';
 import { AccessPicker } from '@/components/AccessPicker';
 import { OnboardingSteps } from '@/components/OnboardingSteps';
+import { useDebugMode } from '@/lib/debug';
 
 /** Step 2: module access, prefilled with the department defaults. */
 export function OnboardingAccessPage() {
@@ -12,6 +13,7 @@ export function OnboardingAccessPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const view = useQuery({ queryKey: ['onboarding', id], queryFn: () => getOnboarding(id) });
+  const debug = useDebugMode();
 
   if (view.isLoading) return <p className="p-6 text-muted-foreground">Loading…</p>;
   if (view.error || !view.data) return <p className="p-6 text-destructive">{(view.error as Error)?.message}</p>;
@@ -25,9 +27,9 @@ export function OnboardingAccessPage() {
         <p className="text-sm text-muted-foreground">
           {department ? (
             <>
-              Joining <strong>{department.name}</strong>: they are added to the{' '}
-              <code className="font-mono">{department.group_name}</code> group automatically, and the department&apos;s
-              default access is pre-selected below. Add or remove the specific roles they need.
+              As part of <strong>{department.name}</strong>, they already get the department&apos;s usual access, ticked
+              below. Tick or untick anything they need.
+              {debug && <span className="ml-1 font-mono text-xs">(group {department.group_name})</span>}
             </>
           ) : (
             <>
@@ -48,6 +50,7 @@ export function OnboardingAccessPage() {
         plan={draft.roles}
         editable={editable}
         defaults={department?.default_roles.map((r) => r.role_name)}
+        intro={<>Switch on the modules they need, then tick what they should be able to do.</>}
         allowSaveWhenClean
         saveLabel="Save & continue to review"
         onSave={async (roles) => {

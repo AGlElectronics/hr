@@ -398,10 +398,41 @@ func (k *KeycloakIdP) SetEnabled(ctx context.Context, userID string, enabled boo
 	return k.patchUser(ctx, userID, map[string]any{"enabled": enabled}, nil)
 }
 
-// UpdateProfile syncs email, names and attributes (the username is left
-// unchanged).
+// UpdateProfile syncs email, names and attributes, and renames the login
+// when p.Username is set (needs editUsernameAllowed on the realm).
 func (k *KeycloakIdP) UpdateProfile(ctx context.Context, userID string, p Profile) error {
-	return k.patchUser(ctx, userID, map[string]any{"email": p.Email, "firstName": p.FirstName, "lastName": p.LastName}, p.Attributes)
+	changes := map[string]any{"email": p.Email, "firstName": p.FirstName, "lastName": p.LastName}
+	if u := strings.TrimSpace(p.Username); u != "" {
+		changes["username"] = u
+	}
+	return k.patchUser(ctx, userID, changes, p.Attributes)
+}
+
+// UsernameOwner looks the username up in the realm.
+func (k *KeycloakIdP) UsernameOwner(ctx context.Context, username string) (string, bool, error) {
+	owner, found := "", false
+	err := k.withFreshTokenRetry(func() error {
+		token, err := k.accessToken(ctx)
+		if err != nil {
+			return err
+		}
+		id, err := k.findUserID(ctx, token, username)
+		if err != nil || id == "" {
+			return err
+		}
+		var rep struct {
+			Attributes map[string][]string `json:"attributes"`
+		}
+		if err := k.adminJSON(ctx, token, http.MethodGet, "/users/"+url.PathEscape(id), nil, &rep); err != nil {
+			return err
+		}
+		found = true
+		if v := rep.Attributes[AttrHRPersonID]; len(v) > 0 {
+			owner = v[0]
+		}
+		return nil
+	})
+	return owner, found, err
 }
 
 func (k *KeycloakIdP) patchUser(ctx context.Context, userID string, changes map[string]any, attrs map[string]string) error {

@@ -44,7 +44,18 @@ export async function signInWithOidc(returnPath: string): Promise<void> {
     throw new Error('OIDC is not configured (set VITE_OIDC_AUTHORITY and VITE_OIDC_CLIENT_ID).');
   }
   const safePath = returnPath.startsWith('/') ? returnPath : '/dashboard';
-  await mgr.signinRedirect({ state: safePath });
+  try {
+    await mgr.signinRedirect({ state: safePath });
+  } catch (err) {
+    // fetch() rejects with a bare TypeError ("Failed to fetch") when the login
+    // server is down or its certificate isn't trusted.
+    if (err instanceof TypeError) {
+      throw new Error(
+        `Can't reach the login server (${new URL(mgr.settings.authority).host}). It may be down or its certificate may have expired.`,
+      );
+    }
+    throw err;
+  }
 }
 
 export async function signOutOidc(): Promise<void> {

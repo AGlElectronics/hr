@@ -2,6 +2,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
 	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
+	"github.com/AGlElectronics/hr/backend/internal/qualification"
 	"github.com/AGlElectronics/hr/backend/internal/service"
 )
 
@@ -37,6 +39,20 @@ type Deps struct {
 	Mailer mail.Sender
 	// Den is the pairing with Den; nil means a fresh standalone client.
 	Den *denlink.Client
+	// RoleGate is shared with the background worker; nil builds one from Config.
+	RoleGate *service.RoleGateService
+}
+
+// NewRoleGate builds the training-requirement service from config. Gating
+// is off (requirements not enforced) without LEARN_HOLDINGS_URL and token.
+func NewRoleGate(cfg *config.Config, pool *pgxpool.Pool, idp provisioners.IdPProvisioner, logger zerolog.Logger) *service.RoleGateService {
+	var holdings service.HoldingsSource
+	if cfg.RoleGateConfigured() {
+		holdings = &qualification.HoldingsClient{URL: cfg.LearnHoldingsURL, Token: cfg.LearnServiceToken}
+	}
+	accounts, _ := idp.(provisioners.AccountManager)
+	quals := &qualification.Fetcher{Sources: catalog.ParseSources(cfg.QualificationCatalogSources)}
+	return service.NewRoleGateService(pool, audit.NewWriter(pool, logger), accounts, holdings, quals, logger)
 }
 
 // NewRouter wires the chi router with middleware, CORS and routes.
@@ -82,44 +98,80 @@ func NewRouter(deps Deps, version string) http.Handler {
 	if den == nil {
 		den = denlink.New(deps.Pool, denlink.Config{Slug: "hr", Version: version}, deps.Logger)
 	}
-	r.Get("/api/brand", den.BrandHandler("/api/brand/logo"))
-	r.Get("/api/brand/logo", den.LogoHandler)
+	r.Get("/api/brand", den.BrandHandler("/api/brand"))
+	r.Get("/api/brand/{role}", den.AssetHandler)
 
 	auditWriter := audit.NewWriter(deps.Pool, deps.Logger)
 	settingsSvc := service.NewSettingsService(deps.Pool, auditWriter, den)
-	peopleSvc := service.NewPeopleService(deps.Pool, auditWriter)
+	usernames, _ := deps.IdP.(provisioners.UsernameDirectory)
+	peopleSvc := service.NewPeopleService(deps.Pool, auditWriter, settingsSvc, usernames)
 	draftSvc := service.NewDraftService(deps.Pool, auditWriter)
 	provSvc := service.NewProvisionService(deps.Pool, draftSvc, peopleSvc, deps.IdP, deps.Workspace, auditWriter, settingsSvc)
-	apprSvc := service.NewApprovalService(deps.Pool, draftSvc, auditWriter)
+	checks := &checksHandler{people: peopleSvc, settings: settingsSvc, client: &http.Client{Timeout: 5 * time.Second}}
 	notifySvc := service.NewNotifyService(deps.Logger, draftSvc, peopleSvc, auditWriter)
 	groupEnsurer, _ := deps.IdP.(provisioners.GroupEnsurer)
 	deptSvc := service.NewDepartmentService(deps.Pool, auditWriter, groupEnsurer)
-	onboardingSvc := service.NewOnboardingService(peopleSvc, draftSvc, deptSvc)
+	deptSvc.SetHooks(service.ParseOffboardHooks(deps.Config.DepartmentHooks), deps.Logger)
+	onboardingSvc := service.NewOnboardingService(peopleSvc, draftSvc, deptSvc, func(ctx context.Context) []service.RolePlanInput {
+		out := []service.RolePlanInput{}
+		for _, r := range catalog.DefaultRoles(fetcher.FetchAll(ctx)) {
+			scope := r.Scope
+			if scope == "" {
+				scope = "global"
+			}
+			out = append(out, service.RolePlanInput{RoleName: r.Key, GroupName: r.Group, Scope: scope})
+		}
+		return out
+	})
 	depts := &departmentHandler{svc: deptSvc}
 	onboarding := &onboardingHandler{svc: onboardingSvc, prov: provSvc}
+
+	gate := deps.RoleGate
+	if gate == nil {
+		gate = NewRoleGate(deps.Config, deps.Pool, deps.IdP, deps.Logger)
+	}
+	provSvc.SetRoleGate(gate)
+	onboardingSvc.SetRoleGate(gate)
+	roleGate := &roleGateHandler{svc: gate, quals: &qualification.Fetcher{Sources: catalog.ParseSources(deps.Config.QualificationCatalogSources)}}
 
 	accounts, _ := deps.IdP.(provisioners.AccountManager)
 	directory, _ := deps.IdP.(provisioners.Directory)
 	lifecycleSvc := service.NewLifecycleService(deps.Pool, peopleSvc, draftSvc, deptSvc, accounts, deps.Mailer, settingsSvc, auditWriter)
+	lifecycleSvc.SetRoleGate(gate)
+	lifecycleSvc.SetOffboardHooks(service.ParseOffboardHooks(deps.Config.OffboardHooks))
 	dashSvc := service.NewDashboardService(deps.Pool, peopleSvc, deptSvc)
 	misc := &miscHandler{settings: settingsSvc, dash: dashSvc, directory: directory, depts: deptSvc}
 
 	people := &peopleHandler{svc: peopleSvc, lifecycle: lifecycleSvc}
 	drafts := &draftHandler{svc: draftSvc}
 	prov := &provisionHandler{svc: provSvc}
-	appr := &approvalHandler{svc: apprSvc}
 	notify := &notifyHandler{svc: notifySvc}
 
 	r.Route("/api", func(api chi.Router) {
 		api.Use(auth.Middleware(deps.Config, deps.OIDCVerifier))
 
 		api.Get("/me", meHandler(deps.Config))
+		prefs := den.PreferencesHandler(func(r *http.Request) (string, string, bool) {
+			a, _ := actor.FromContext(r.Context())
+			if a == nil || a.Issuer == "" || a.Subject == "" {
+				return "", "", false
+			}
+			return a.Issuer, a.Subject, true
+		})
+		api.Get("/me/preferences", prefs)
+		api.Put("/me/preferences", prefs)
 
 		api.Group(func(api chi.Router) {
 			api.Use(auth.RequireAccess)
 			api.Get("/access-catalog", func(w http.ResponseWriter, req *http.Request) {
 				writeJSON(w, http.StatusOK, map[string]any{"modules": fetcher.FetchAll(req.Context())})
 			})
+			api.Get("/qualification-catalog", roleGate.qualificationCatalog)
+			api.Get("/role-requirements", roleGate.listRequirements)
+			api.Post("/role-requirements", roleGate.createRequirement)
+			api.Delete("/role-requirements/{id}", roleGate.deleteRequirement)
+			api.Get("/pending-grants", roleGate.listGrants)
+			api.Post("/pending-grants/{id}/override", roleGate.override)
 
 			api.Route("/people", func(pr chi.Router) {
 				pr.Get("/", people.list)
@@ -140,6 +192,9 @@ func NewRouter(deps Deps, version string) http.Handler {
 				dr.Post("/sync", den.SyncHandler)
 				dr.Delete("/pair", den.UnpairHandler)
 			})
+			api.Get("/check/email", checks.email)
+			api.Get("/check/username", checks.username)
+			api.Get("/address/search", checks.addressSearch)
 			api.Get("/dashboard", misc.dashboard)
 			api.Get("/idp/groups", misc.idpGroups)
 
@@ -162,10 +217,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 				dr.Post("/", drafts.create)
 				dr.Get("/{id}", drafts.get)
 				dr.Put("/{id}/roles", drafts.assignRoles)
-				dr.Post("/{id}/provision", prov.trigger)
 				dr.Get("/{id}/provisioning-jobs", prov.listJobs)
-				dr.Post("/{id}/approvals", appr.decide)
-				dr.Get("/{id}/approvals", appr.list)
 				dr.Post("/{id}/notify", notify.send)
 			})
 		})

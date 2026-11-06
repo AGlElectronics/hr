@@ -1,16 +1,19 @@
 import { useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { Link } from '@tanstack/react-router';
-
-import { listPeople, PERSON_STATUSES } from '@/api/people';
+import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { Pencil } from 'lucide-react';
 
+import { listPeople, PERSON_STATUSES, type PersonStatus } from '@/api/people';
 import { PersonQuickPanel } from '@/components/PersonQuickPanel';
 import { PersonStatusBadge } from '@/components/PersonStatusBadge';
+import { SearchInput } from '@/components/SearchInput';
 
 export function PeoplePage() {
+  const { status = '' } = useSearch({ from: '/app/people' });
+  const navigate = useNavigate();
+  const setStatus = (s: string) =>
+    void navigate({ to: '/people', search: s ? { status: s as PersonStatus } : {}, replace: true });
   const [q, setQ] = useState('');
-  const [status, setStatus] = useState('');
   const [open, setOpen] = useState<string | null>(null);
 
   const peopleQuery = useQuery({
@@ -18,9 +21,7 @@ export function PeoplePage() {
     queryFn: () => listPeople({ q: q || undefined, status: status || undefined }),
     placeholderData: keepPreviousData,
   });
-
   const items = peopleQuery.data?.items ?? [];
-  const missing = items.filter((p) => p.email_missing).length;
 
   return (
     <div className="p-6 space-y-6">
@@ -32,24 +33,16 @@ export function PeoplePage() {
           </p>
         </div>
         <Link to="/onboarding/new"
-          className="rounded-pill bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground">
+          className="shrink-0 rounded-pill bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground">
           Onboard a volunteer
         </Link>
       </div>
 
-      {missing > 0 && (
-        <p className="rounded-md border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-warning-foreground">
-          {missing} {missing === 1 ? 'person has' : 'people have'} no email yet. Email is required for login and
-          provisioning — open them and add one.
-        </p>
-      )}
-
       <section className="rounded-lg border border-border bg-card">
         <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
-          <span className="font-semibold">All people</span>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or email…"
-            className="ml-auto w-56 rounded-md border border-input bg-background px-3 py-1.5 text-sm" />
-          <select value={status} onChange={(e) => setStatus(e.target.value)}
+          <span className="font-semibold">{PERSON_STATUSES.find((s) => s.value === status)?.label ?? 'All'} people</span>
+          <SearchInput value={q} onChange={setQ} placeholder="Name, nickname or email…" className="ml-auto w-64" />
+          <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status"
             className="rounded-md border border-input bg-background px-3 py-1.5 text-sm">
             <option value="">All statuses</option>
             {PERSON_STATUSES.map((s) => (
@@ -79,14 +72,8 @@ export function PeoplePage() {
                   )}
                 </td>
                 <td className="px-4 py-2">
-                  {p.email_missing ? (
-                    <span className="text-xs font-semibold text-warning">Email missing</span>
-                  ) : (
-                    <>
-                      <div>{p.email}</div>
-                      {p.org_email && <div className="text-xs text-muted-foreground">{p.org_email}</div>}
-                    </>
-                  )}
+                  <div>{p.email}</div>
+                  {p.org_email && <div className="text-xs text-muted-foreground">{p.org_email}</div>}
                 </td>
                 <td className="px-4 py-2 hidden md:table-cell text-muted-foreground">{p.phone || '—'}</td>
                 <td className="px-4 py-2"><PersonStatusBadge status={p.status} /></td>

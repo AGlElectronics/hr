@@ -20,42 +20,48 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
 )
 
-// End-to-end draft lifecycle against a real Postgres:
-// person → draft → roles → provision → approve → active.
+// People validation against a real Postgres: required email, names without
+// symbols, real phone numbers, unique email and login name.
 // Skips unless HR_TEST_DATABASE_URL is set.
-func TestEmploymentDraftHappyPath(t *testing.T) {
+func TestPeopleValidation(t *testing.T) {
 	do, pool := newTestClient(t)
 
 	noEmail := do(http.MethodPost, "/api/people", map[string]any{"first_name": "Ada", "last_name": "Lovelace"})
-	if noEmail.Code != http.StatusBadRequest && noEmail.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("person without email: want 4xx validation, got %d %s", noEmail.Code, noEmail.Body.String())
+	if noEmail.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("person without email: want 422, got %d %s", noEmail.Code, noEmail.Body.String())
 	}
 
+	nick := uniqueNick("ada")
 	email := uniqueEmail("ada")
-	personRec := do(http.MethodPost, "/api/people", completePerson("Ada", "Lovelace", email))
-	if personRec.Code != http.StatusCreated && personRec.Code != http.StatusOK {
+	bad := completePerson("Ada🦊", "Lovelace", email, nick)
+	bad["phone"] = "+999 123"
+	rec := do(http.MethodPost, "/api/people", bad)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"first_name"`) || !strings.Contains(rec.Body.String(), `"phone"`) {
+		t.Fatalf("emoji name / fake phone: want 422 on first_name and phone, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	personRec := do(http.MethodPost, "/api/people", completePerson("Ada", "O'Brien-Lovelace", email, nick))
+	if personRec.Code != http.StatusCreated {
 		t.Fatalf("create person %d %s", personRec.Code, personRec.Body.String())
 	}
-
-	dup := do(http.MethodPost, "/api/people", completePerson("Other", "Ada", strings.ToUpper(email)))
-	if dup.Code < 400 || dup.Code >= 500 {
-		t.Fatalf("duplicate email: want 4xx, got %d %s", dup.Code, dup.Body.String())
-	}
 	var person struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
+		ID       string `json:"id"`
+		Username string `json:"username"`
+		Phone    string `json:"phone"`
 	}
 	_ = json.Unmarshal(personRec.Body.Bytes(), &person)
-	if person.ID == "" {
-		t.Fatalf("person id missing: %s", personRec.Body.String())
-	}
 	cleanupPerson(t, pool, person.ID)
-	runLegacyDraftFlow(t, do, person.ID)
+	if person.Username != nick || person.Phone != "+442079460000" {
+		t.Fatalf("username/phone not normalized: %s", personRec.Body.String())
+	}
 
-	pRec := do(http.MethodGet, "/api/people/"+person.ID, nil)
-	_ = json.Unmarshal(pRec.Body.Bytes(), &person)
-	if person.Status != "active" {
-		t.Fatalf("person status want active, got %q", person.Status)
+	dup := do(http.MethodPost, "/api/people", completePerson("Other", "Ada", strings.ToUpper(email), uniqueNick("other")))
+	if dup.Code != http.StatusUnprocessableEntity || !strings.Contains(dup.Body.String(), `"email"`) {
+		t.Fatalf("duplicate email: want 422, got %d %s", dup.Code, dup.Body.String())
+	}
+	dupNick := do(http.MethodPost, "/api/people", completePerson("Other", "Ada", uniqueEmail("other"), nick))
+	if dupNick.Code != http.StatusUnprocessableEntity || !strings.Contains(dupNick.Body.String(), `"nickname"`) {
+		t.Fatalf("duplicate nickname: want 422, got %d %s", dupNick.Code, dupNick.Body.String())
 	}
 }
 
@@ -96,7 +102,7 @@ func TestOnboardingWizard(t *testing.T) {
 
 	startRec := do(http.MethodPost, "/api/onboardings", map[string]any{
 		"department_id": dept.ID,
-		"person":        completePerson("Grace", "Hopper", uniqueEmail("grace")),
+		"person":        completePerson("Grace", "Hopper", uniqueEmail("grace"), uniqueNick("grace")),
 	})
 	if startRec.Code != http.StatusCreated {
 		t.Fatalf("start onboarding %d %s", startRec.Code, startRec.Body.String())
@@ -259,20 +265,28 @@ func runLifecycle(t *testing.T, do testClient, pool *pgxpool.Pool, personID, dra
 
 	rec = do(http.MethodPost, "/api/people/"+personID+"/offboard", map[string]any{"reason": "left the team"})
 	var off struct {
-		Person struct {
-			Status string `json:"status"`
-		} `json:"person"`
+		Username string   `json:"username"`
 		Warnings []string `json:"warnings"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &off)
-	if rec.Code != http.StatusOK || off.Person.Status != "offboarded" || len(off.Warnings) != 1 {
+	if rec.Code != http.StatusOK || off.Username == "" || len(off.Warnings) != 1 {
 		t.Fatalf("offboard %d %s", rec.Code, rec.Body.String())
 	}
-	if rec = do(http.MethodPost, "/api/people/"+personID+"/offboard", map[string]any{"reason": "again"}); rec.Code != http.StatusConflict {
-		t.Fatalf("second offboard: want 409, got %d", rec.Code)
+	// Offboarding deletes the person; only a minimal audit line remains.
+	if rec = do(http.MethodGet, "/api/people/"+personID, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("offboarded person: want 404, got %d", rec.Code)
 	}
-	if rec = do(http.MethodPost, "/api/people/"+personID+"/status", map[string]string{"status": "active"}); rec.Code != http.StatusConflict {
-		t.Fatalf("reactivate offboarded: want 409, got %d", rec.Code)
+	var lines int
+	var meta string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*), COALESCE(max(metadata::text), '') FROM audit_events WHERE entity_id = $1`, personID).Scan(&lines, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if lines != 1 || !strings.Contains(meta, off.Username) || strings.Contains(meta, "@") {
+		t.Fatalf("audit after offboard: %d lines, %s", lines, meta)
+	}
+	if rec = do(http.MethodPost, "/api/people/"+personID+"/offboard", map[string]any{"reason": "again"}); rec.Code != http.StatusNotFound {
+		t.Fatalf("second offboard: want 404, got %d", rec.Code)
 	}
 }
 
@@ -297,13 +311,24 @@ func uniqueEmail(name string) string {
 	return fmt.Sprintf("%s+%d@example.test", name, time.Now().UnixNano())
 }
 
-func completePerson(first, last, email string) map[string]any {
+// uniqueNick is a letters-only nickname that differs per run.
+func uniqueNick(prefix string) string {
+	n := time.Now().UnixNano()
+	b := []byte(prefix)
+	for i := 0; i < 8; i++ {
+		b = append(b, byte('a'+n%26))
+		n /= 26
+	}
+	return string(b)
+}
+
+func completePerson(first, last, email, nickname string) map[string]any {
 	return map[string]any{
 		"first_name":        first,
 		"last_name":         last,
-		"nickname":          first,
+		"nickname":          nickname,
 		"date_of_birth":     "1990-12-10",
-		"address":           "1 Example Street, Example City",
+		"address":           map[string]string{"street": "1 Example Street", "postal_code": "EC1A 1BB", "city": "London", "country": "GB"},
 		"email":             email,
 		"phone":             "+44 20 7946 0000",
 		"social_handles":    map[string]string{"telegram": "@" + strings.ToLower(first)},
@@ -314,6 +339,13 @@ func completePerson(first, last, email string) map[string]any {
 type testClient func(method, path string, body any) *httptest.ResponseRecorder
 
 func newTestClient(t *testing.T) (testClient, *pgxpool.Pool) {
+	t.Helper()
+	return newTestClientWith(t, nil)
+}
+
+// newTestClientWith lets a test adjust config and dependencies (after the
+// pool is open) before the router is built.
+func newTestClientWith(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config.Config, deps *hrhttp.Deps)) (testClient, *pgxpool.Pool) {
 	t.Helper()
 	dsn := os.Getenv("HR_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -333,13 +365,17 @@ func newTestClient(t *testing.T) (testClient, *pgxpool.Pool) {
 		AuthMode:       config.AuthModeDev,
 		DevDefaultUser: "test-hr-admin",
 	}
-	router := hrhttp.NewRouter(hrhttp.Deps{
+	deps := hrhttp.Deps{
 		Config:    cfg,
 		Pool:      pool,
 		Logger:    zerolog.Nop(),
 		IdP:       provisioners.NewFakeIdP(zerolog.Nop()),
 		Workspace: provisioners.NewFakeWorkspace(zerolog.Nop()),
-	}, "test")
+	}
+	if adjust != nil {
+		adjust(pool, cfg, &deps)
+	}
+	router := hrhttp.NewRouter(deps, "test")
 
 	return func(method, path string, body any) *httptest.ResponseRecorder {
 		var rdr *bytes.Reader
@@ -368,70 +404,4 @@ func cleanupPerson(t *testing.T, pool *pgxpool.Pool, personID string) {
 		_, _ = pool.Exec(ctx, `DELETE FROM employment_drafts WHERE person_id = $1`, personID)
 		_, _ = pool.Exec(ctx, `DELETE FROM people WHERE id = $1`, personID)
 	})
-}
-
-func runLegacyDraftFlow(t *testing.T, do testClient, personID string) {
-	t.Helper()
-	draftRec := do(http.MethodPost, "/api/drafts", map[string]any{
-		"person_id": personID,
-		"title":     "Volunteer",
-		"notes":     "flow test",
-	})
-	if draftRec.Code != http.StatusCreated && draftRec.Code != http.StatusOK {
-		t.Fatalf("create draft %d %s", draftRec.Code, draftRec.Body.String())
-	}
-	var draft struct {
-		ID    string `json:"id"`
-		State string `json:"state"`
-	}
-	_ = json.Unmarshal(draftRec.Body.Bytes(), &draft)
-	if draft.ID == "" || draft.State != "draft" {
-		t.Fatalf("draft unexpected: %s", draftRec.Body.String())
-	}
-
-	rolesRec := do(http.MethodPut, "/api/drafts/"+draft.ID+"/roles", map[string]any{
-		"roles": []map[string]string{
-			{"role_name": "volunteer", "group_name": "volunteers", "scope": "global"},
-		},
-	})
-	if rolesRec.Code >= 300 {
-		t.Fatalf("assign roles %d %s", rolesRec.Code, rolesRec.Body.String())
-	}
-
-	provRec := do(http.MethodPost, "/api/drafts/"+draft.ID+"/provision", nil)
-	if provRec.Code >= 300 {
-		t.Fatalf("provision %d %s", provRec.Code, provRec.Body.String())
-	}
-	_ = json.Unmarshal(provRec.Body.Bytes(), &draft)
-	if draft.State != "pending_approval" && draft.State != "provisioning" {
-		// Fake provisioners complete synchronously → pending_approval (or active path).
-		t.Logf("after provision state=%q body=%s", draft.State, provRec.Body.String())
-	}
-
-	getRec := do(http.MethodGet, "/api/drafts/"+draft.ID, nil)
-	_ = json.Unmarshal(getRec.Body.Bytes(), &draft)
-	if draft.State == "draft" {
-		t.Fatalf("still draft after provision: %s", getRec.Body.String())
-	}
-
-	if draft.State == "pending_approval" {
-		apprRec := do(http.MethodPost, "/api/drafts/"+draft.ID+"/approvals", map[string]any{
-			"decision": "approved",
-			"reason":   "looks good",
-		})
-		if apprRec.Code >= 300 {
-			t.Fatalf("approve %d %s", apprRec.Code, apprRec.Body.String())
-		}
-	}
-
-	finalRec := do(http.MethodGet, "/api/drafts/"+draft.ID, nil)
-	_ = json.Unmarshal(finalRec.Body.Bytes(), &draft)
-	if draft.State != "active" {
-		t.Fatalf("want active, got %q body=%s", draft.State, finalRec.Body.String())
-	}
-
-	jobsRec := do(http.MethodGet, "/api/drafts/"+draft.ID+"/provisioning-jobs", nil)
-	if jobsRec.Code != http.StatusOK {
-		t.Fatalf("jobs %d %s", jobsRec.Code, jobsRec.Body.String())
-	}
 }

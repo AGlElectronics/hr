@@ -3,12 +3,15 @@ import type { Department } from './departments';
 import type { EmploymentDraft } from './drafts';
 import type { ProvisioningJob } from './provision';
 import type { Person, PersonInput } from './people';
+import type { PendingGrant } from './roleGate';
 
 export type OnboardingView = {
   draft: EmploymentDraft;
   person: Person;
   department?: Department;
   missing_fields: Record<string, string>;
+  /** Roles of this onboarding still waiting for training. */
+  pending_grants?: PendingGrant[];
 };
 
 export type OnboardingDetails = { person_id?: string; person: PersonInput; department_id: string };
@@ -23,6 +26,8 @@ export type CompleteResult = {
   password_setup_email_sent: boolean;
   password_setup_error?: string;
   temporary_password?: string;
+  /** Roles left out until the person finishes training. */
+  pending_grants?: PendingGrant[];
 };
 
 export const startOnboarding = (body: OnboardingDetails) =>

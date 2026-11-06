@@ -6,14 +6,15 @@ const FALLBACK_TEMPLATE = '{first}.{last}';
 
 export type NameParts = { first: string; last: string; nickname: string };
 
-/** Lowercase ASCII ("Zoë Müller" -> "zoe-muller"). */
+/** Lowercase ASCII ("Zoë Mary-Ann O'Neil" -> "zoe.mary-ann.oneil"). */
 export function slug(s: string): string {
   return s
     .trim()
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s/g, '-')
+    .replace(/['’]/g, '')
+    .replace(/\s+/g, '.')
     .replace(/[^a-z0-9._-]+/g, '')
     .replace(/([._-])[._-]+/g, '$1')
     .replace(/^[._-]+|[._-]+$/g, '');

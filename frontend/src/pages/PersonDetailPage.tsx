@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { Pencil } from 'lucide-react';
 
-import { getPerson, SOCIAL_NETWORKS, updatePerson, type PersonInput } from '@/api/people';
+import { addressLine, getPerson, SOCIAL_NETWORKS, updatePerson, type PersonInput } from '@/api/people';
+import { formatPhone } from '@/lib/phone';
 import { listDrafts } from '@/api/drafts';
 import { PersonActions, useInvalidatePerson } from '@/components/PersonActions';
 import { PersonForm } from '@/components/PersonForm';
@@ -28,7 +29,7 @@ export function PersonDetailPage() {
     onSuccess: (p) => {
       qc.setQueryData(['person', id], p);
       invalidate();
-      setSyncWarning(p.idp_sync_error ?? null);
+      setSyncWarning(p.idp_sync_error ? `Profile saved, but their account could not be updated: ${p.idp_sync_error}` : p.warning ?? null);
       setEditing(false);
     },
   });
@@ -62,17 +63,12 @@ export function PersonDetailPage() {
 
       {syncWarning && (
         <p className="rounded-md border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-warning-foreground">
-          Profile saved, but Keycloak could not be updated: {syncWarning}
-        </p>
-      )}
-      {p.email_missing && !editing && (
-        <p className="rounded-md border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-warning-foreground">
-          This person has no email yet. Add one before onboarding — it becomes their login username.
+          {syncWarning}
         </p>
       )}
 
       {editing ? (
-        <section className="rounded-lg border-2 border-primary/40 bg-card p-4">
+        <section className="rounded-lg border border-border bg-card p-4">
           <h2 className="mb-3 font-semibold">Editing profile</h2>
           <PersonForm
             initial={p}
@@ -91,21 +87,22 @@ export function PersonDetailPage() {
         <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
           <div className="grid content-start gap-4 md:grid-cols-2">
             <Card title="Contact" onEdit={() => setEditing(true)}>
-              <Row label="Private email" value={p.email_missing ? undefined : p.email} />
+              <Row label="Private email" value={p.email} />
               <Row label="Organization email" value={p.org_email} />
-              <Row label="Phone" value={p.phone} />
-              <Row label="Address" value={p.address} />
+              <Row label="Phone" value={formatPhone(p.phone)} />
+              <Row label="Address" value={addressLine(p.address)} />
             </Card>
             <Card title="Identity" onEdit={() => setEditing(true)}>
               <Row label="First name" value={p.first_name} />
               <Row label="Last name" value={p.last_name} />
               <Row label="Nickname" value={p.nickname} />
+              <Row label="Login name" value={p.username} />
               <Row label="Date of birth" value={p.date_of_birth} />
               {p.is_banned && <Row label="Flag" value="Banned" />}
             </Card>
             <Card title="Emergency contact" onEdit={() => setEditing(true)}>
               <Row label="Name" value={ec.name} />
-              <Row label="Phone" value={ec.phone} />
+              <Row label="Phone" value={formatPhone(ec.phone)} />
               <Row label="Email" value={ec.email} />
               <Row label="Comments" value={ec.comments} />
             </Card>
@@ -122,19 +119,15 @@ export function PersonDetailPage() {
 
           <aside className="space-y-4">
             <section className="rounded-lg border border-border bg-card p-4">
-              <PersonActions personId={p.id} />
+              <PersonActions personId={p.id} onRemoved={() => void navigate({ to: '/people' })} />
             </section>
             <section className="rounded-lg border border-border bg-card">
               <header className="border-b border-border px-4 py-3 text-sm font-semibold">Onboarding history</header>
               <ul className="divide-y divide-border">
                 {drafts.map((d) => (
                   <li key={d.id} className="flex items-center justify-between px-4 py-2 text-sm">
-                    {d.department_id ? (
-                      <Link to="/onboarding/$id/review" params={{ id: d.id }} className="font-medium hover:underline">{d.title}</Link>
-                    ) : (
-                      <Link to="/drafts/$id" params={{ id: d.id }} className="font-medium hover:underline">{d.title}</Link>
-                    )}
-                    <span className="text-xs text-muted-foreground">{d.state.replace('_', ' ')}</span>
+                    <Link to="/onboarding/$id/review" params={{ id: d.id }} className="font-medium hover:underline">{d.title}</Link>
+                    <span className="text-xs text-muted-foreground">{d.state === 'active' ? 'completed' : 'in progress'}</span>
                   </li>
                 ))}
                 {drafts.length === 0 && <li className="px-4 py-4 text-sm text-muted-foreground">None yet.</li>}
@@ -166,7 +159,7 @@ function Row({ label, value }: { label: string; value?: string }) {
   return (
     <div className="grid grid-cols-[9rem_1fr] gap-2 text-sm">
       <span className="text-muted-foreground">{label}</span>
-      <span className="break-words">{value || '—'}</span>
+      <span className="min-w-0 [overflow-wrap:anywhere]">{value || '—'}</span>
     </div>
   );
 }

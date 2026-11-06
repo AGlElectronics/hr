@@ -25,7 +25,7 @@ export type PersonAccess = {
   onboardings: EmploymentDraft[];
 };
 
-export type OffboardResult = { person: Person; warnings: string[] };
+export type OffboardResult = { username: string; warnings: string[] };
 
 export const getPersonAccess = (id: string) => apiRequest<PersonAccess>(`/api/people/${id}/access`);
 

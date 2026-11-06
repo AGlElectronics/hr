@@ -1,11 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -30,6 +33,70 @@ type LifecycleService struct {
 	mailer   mail.Sender                 // nil when email is not configured
 	settings *SettingsService
 	audit    *audit.Writer
+	gate     *RoleGateService // nil = no training requirements
+	hooks    []OffboardHook   // modules told after an offboarding
+}
+
+// SetRoleGate holds newly added roles back until their training is done.
+func (s *LifecycleService) SetRoleGate(g *RoleGateService) { s.gate = g }
+
+// OffboardHook is one module told after an offboarding (e.g. the wiki,
+// which orphans the person's private space).
+type OffboardHook struct {
+	URL   string
+	Token string
+}
+
+// ParseOffboardHooks reads OFFBOARD_HOOKS: comma-separated "url|token".
+func ParseOffboardHooks(raw string) []OffboardHook {
+	var out []OffboardHook
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		url, token, _ := strings.Cut(entry, "|")
+		out = append(out, OffboardHook{URL: strings.TrimSpace(url), Token: strings.TrimSpace(token)})
+	}
+	return out
+}
+
+// SetOffboardHooks registers the modules told after an offboarding.
+func (s *LifecycleService) SetOffboardHooks(hooks []OffboardHook) { s.hooks = hooks }
+
+// notifyOffboardHooks tells each hook who left. A failed hook becomes a
+// warning the admin sees; it never blocks the offboarding itself.
+func (s *LifecycleService) notifyOffboardHooks(ctx context.Context, subject, username string) []string {
+	var warnings []string
+	for _, h := range s.hooks {
+		body, _ := json.Marshal(map[string]string{"subject": subject, "username": username})
+		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		req, err := http.NewRequestWithContext(hctx, http.MethodPost, h.URL, bytes.NewReader(body))
+		if err != nil {
+			cancel()
+			warnings = append(warnings, "Offboarding hook "+h.URL+" is misconfigured: "+err.Error())
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if h.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+h.Token)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = res.Body.Close()
+		}
+		cancel()
+		if err != nil || res.StatusCode >= 300 {
+			detail := ""
+			if err != nil {
+				detail = ": " + err.Error()
+			} else {
+				detail = ": HTTP " + res.Status
+			}
+			warnings = append(warnings, "Could not tell "+h.URL+" about the offboarding"+detail+". The module keeps their data until it hears about it.")
+		}
+	}
+	return warnings
 }
 
 // NewLifecycleService wires a LifecycleService.
@@ -57,10 +124,11 @@ type AccountState struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// OffboardResult is the offboarded person plus anything HR could not do.
+// OffboardResult reports anything HR could not do while offboarding (the
+// person itself is deleted).
 type OffboardResult struct {
-	Person   *domain.Person `json:"person"`
-	Warnings []string       `json:"warnings"`
+	Username string   `json:"username"`
+	Warnings []string `json:"warnings"`
 }
 
 // idpFailure turns an IdP error into a message HR can act on.
@@ -188,12 +256,6 @@ func (s *LifecycleService) Access(ctx context.Context, personID uuid.UUID) (*Per
 		return nil, err
 	}
 	out := &PersonAccess{Person: person, ExternalID: ext, Account: s.accountState(ctx, ext), Onboardings: drafts, Memberships: []Membership{}}
-	if out.Account.State == "missing" && person.Status == domain.PersonOffboarded {
-		out.Account.State = "deleted"
-	}
-	if person.Status == domain.PersonOffboarded {
-		return out, nil
-	}
 	for _, d := range drafts {
 		if d.State != domain.DraftStateActive {
 			continue
@@ -237,9 +299,6 @@ func (s *LifecycleService) ChangeAccess(ctx context.Context, actor string, perso
 	if err != nil {
 		return nil, err
 	}
-	if acc.Person.Status == domain.PersonOffboarded {
-		return nil, httperror.Conflict("person is offboarded; start a new onboarding instead")
-	}
 	var target *Membership
 	for i := range acc.Memberships {
 		if acc.Memberships[i].DraftID == in.DraftID || (in.DraftID == uuid.Nil && len(acc.Memberships) == 1) {
@@ -250,8 +309,12 @@ func (s *LifecycleService) ChangeAccess(ctx context.Context, actor string, perso
 		return nil, httperror.Validation("pick which membership to change", map[string]string{"draft_id": "required"})
 	}
 
+	hadRole := map[string]bool{}
+	for _, r := range target.Roles {
+		hadRole[r.RoleName] = true
+	}
 	newRoles := make([]RolePlanInput, 0, len(in.Roles))
-	newGroups := []string{}
+	added := []domain.RolePlan{}
 	for _, r := range in.Roles {
 		r.RoleName, r.GroupName, r.Scope = strings.TrimSpace(r.RoleName), strings.TrimSpace(r.GroupName), strings.TrimSpace(r.Scope)
 		if r.RoleName == "" {
@@ -261,16 +324,47 @@ func (s *LifecycleService) ChangeAccess(ctx context.Context, actor string, perso
 			r.Scope = "global"
 		}
 		newRoles = append(newRoles, r)
-		if r.GroupName != "" {
-			newGroups = append(newGroups, r.GroupName)
+		if !hadRole[r.RoleName] {
+			added = append(added, domain.RolePlan{RoleName: r.RoleName, GroupName: r.GroupName, Scope: r.Scope})
 		}
 	}
+
+	// Roles still waiting for training, and newly added roles whose
+	// training is not done, keep their group out of the account.
+	held, err := s.gate.waitingRoles(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+	_, pendingNew, err := s.gate.Split(ctx, acc.ExternalID, added)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range pendingNew {
+		held[r.RoleName] = true
+	}
+	newGroups := []string{}
 	keep := membershipGroups(acc.Memberships, target.DraftID)
 	if target.Department != nil {
 		keep[target.Department.GroupName] = true
 	}
-	for _, g := range newGroups {
-		keep[g] = true
+	for _, r := range newRoles {
+		if r.GroupName == "" {
+			continue
+		}
+		keep[r.GroupName] = true
+		if !held[r.RoleName] {
+			newGroups = append(newGroups, r.GroupName)
+		}
+	}
+	var dropped []string
+	stillHas := map[string]bool{}
+	for _, r := range newRoles {
+		stillHas[r.RoleName] = true
+	}
+	for _, r := range target.Roles {
+		if !stillHas[r.RoleName] {
+			dropped = append(dropped, r.RoleName)
+		}
 	}
 	var remove []string
 	for _, r := range target.Roles {
@@ -307,34 +401,89 @@ INSERT INTO role_plans (id, draft_id, role_name, group_name, scope) VALUES ($1, 
 	}); err != nil {
 		return nil, err
 	}
+	if s.gate != nil {
+		if err := s.gate.RecordPending(ctx, personID, target.DraftID, pendingNew); err != nil {
+			return nil, err
+		}
+		if err := s.gate.forgetWaiting(ctx, personID, dropped); err != nil {
+			return nil, httperror.Internal(err)
+		}
+	}
+	pendingKeys := make([]string, 0, len(pendingNew))
+	for _, r := range pendingNew {
+		pendingKeys = append(pendingKeys, r.RoleName)
+	}
 	if err := s.audit.Record(ctx, actor, "person.access.change", "person", personID, map[string]any{
-		"draft_id": target.DraftID, "added_groups": newGroups, "removed_groups": remove,
+		"draft_id": target.DraftID, "added_groups": newGroups, "removed_groups": remove, "pending_roles": pendingKeys,
 	}); err != nil {
 		return nil, err
 	}
 	return s.Access(ctx, personID)
 }
 
-// SyncProfile pushes name, email and profile attributes to the person's IdP
-// account, if they have one.
-func (s *LifecycleService) SyncProfile(ctx context.Context, p *domain.Person) error {
-	if s.accounts == nil || p.EmailMissing || p.Status == domain.PersonOffboarded {
-		return nil
+// SyncProfile pushes name, email, login name and profile attributes to the
+// person's account, if they have one. When the login name or organization
+// email changed, the person gets one email listing the new values.
+func (s *LifecycleService) SyncProfile(ctx context.Context, prev, p *domain.Person) (warning string, err error) {
+	if s.accounts == nil {
+		return "", nil
 	}
 	ext, err := s.externalID(ctx, p.ID)
 	if err != nil || ext == "" {
-		return err
+		return "", err
 	}
-	err = s.accounts.UpdateProfile(ctx, ext, provisioners.Profile{
-		Email: p.Email, FirstName: p.FirstName, LastName: p.LastName, Attributes: personAttributes(p),
-	})
+	renamed := prev != nil && p.Username != "" && !strings.EqualFold(prev.Username, p.Username)
+	profile := provisioners.Profile{Email: p.Email, FirstName: p.FirstName, LastName: p.LastName, Attributes: personAttributes(p)}
+	if renamed {
+		profile.Username = p.Username
+	}
+	err = s.accounts.UpdateProfile(ctx, ext, profile)
 	if errors.Is(err, provisioners.ErrAccountNotFound) {
-		return errors.New("their Keycloak account no longer exists, so only HR was updated")
+		return "", errors.New("their account no longer exists, so only HR was updated")
 	}
 	if err != nil {
-		return idpFailure("update their profile", err)
+		return "", idpFailure("update their profile", err)
 	}
-	return nil
+	orgChanged := prev != nil && p.OrgEmail != "" && !strings.EqualFold(prev.OrgEmail, p.OrgEmail)
+	if !renamed && !orgChanged {
+		return "", nil
+	}
+	if s.mailer == nil {
+		return "Their account was updated, but HR could not email them (email is not configured).", nil
+	}
+	settings, err := s.settings.Get(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := s.mailer.Send(ctx, AccountChangedNotice(settings.OrganizationName, p, renamed, orgChanged)); err != nil {
+		return "Their account was updated, but HR could not email them: " + err.Error(), nil
+	}
+	return "", nil
+}
+
+// AccountChangedNotice tells the person their login name and/or
+// organization email changed.
+func AccountChangedNotice(org string, p *domain.Person, renamed, orgChanged bool) mail.Message {
+	name := firstNonEmpty(p.Nickname, p.FirstName, p.DisplayName)
+	subject := "Your account details have changed"
+	if org = strings.TrimSpace(org); org != "" {
+		subject = "Your " + org + " account details have changed"
+	}
+	var b strings.Builder
+	if name != "" {
+		b.WriteString("Hi " + name + ",\n\n")
+	} else {
+		b.WriteString("Hi,\n\n")
+	}
+	b.WriteString("Your account details have been updated:\n\n")
+	if renamed {
+		b.WriteString("  Login name: " + p.Username + "\n")
+	}
+	if orgChanged {
+		b.WriteString("  Organization email: " + p.OrgEmail + "\n")
+	}
+	b.WriteString("\nYour password stays the same. If you have questions, please reply to this email.\n")
+	return mail.Message{To: p.Email, Subject: subject, Body: b.String()}
 }
 
 // SetStatus pauses an active person or reactivates a paused one. Pausing
@@ -360,9 +509,9 @@ func (s *LifecycleService) SetStatus(ctx context.Context, actor string, personID
 	return s.people.Get(ctx, personID)
 }
 
-// Offboard deletes the person's IdP account, emails them that it was
-// deleted, and sets their status to offboarded. Their HR profile and history
-// are kept, so they can be onboarded again (with a new account).
+// Offboard deletes the person's account, emails them that it was deleted,
+// and deletes them from HR: profile, onboardings and earlier audit entries.
+// One audit line (login name, who, when) is kept.
 func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID uuid.UUID, in OffboardInput) (*OffboardResult, error) {
 	in.Reason = strings.TrimSpace(in.Reason)
 	if in.Reason == "" {
@@ -371,13 +520,6 @@ func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID 
 	acc, err := s.Access(ctx, personID)
 	if err != nil {
 		return nil, err
-	}
-	if acc.Person.Status == domain.PersonOffboarded {
-		return nil, httperror.Conflict("person is already offboarded")
-	}
-	groups := []string{}
-	for g := range membershipGroups(acc.Memberships, uuid.Nil) {
-		groups = append(groups, g)
 	}
 	warnings := []string{}
 	deleted := false
@@ -395,30 +537,37 @@ func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID 
 		}
 		deleted = err == nil
 	}
-	if _, err := s.pool.Exec(ctx, `
-UPDATE people SET status = 'offboarded', offboarded_at = now(), offboard_reason = $2, updated_at = now() WHERE id = $1`,
-		personID, in.Reason); err != nil {
-		return nil, httperror.Internal(err)
-	}
-	notified := false
 	if deleted {
 		if err := s.sendDeletedNotice(ctx, acc.Person, in); err != nil {
 			warnings = append(warnings, "Their account was deleted, but HR could not email them: "+err.Error())
-		} else {
-			notified = true
 		}
 	}
-	if err := s.audit.Record(ctx, actor, "person.offboard", "person", personID, map[string]any{
-		"reason": in.Reason, "groups": groups, "account_deleted": deleted, "notified": notified,
-		"account_state": acc.Account.State, "hr_only": in.HROnly, "warnings": warnings,
+	username := firstNonEmpty(acc.Person.Username, acc.Person.DisplayName)
+	if err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+DELETE FROM audit_events WHERE entity_id = $1
+   OR entity_id IN (SELECT id FROM employment_drafts WHERE person_id = $1)`, personID); err != nil {
+			return httperror.Internal(err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM employment_drafts WHERE person_id = $1`, personID); err != nil {
+			return httperror.Internal(err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM people WHERE id = $1`, personID); err != nil {
+			return httperror.Internal(err)
+		}
+		return nil
 	}); err != nil {
 		return nil, err
 	}
-	p, err := s.people.Get(ctx, personID)
-	if err != nil {
+	if err := s.audit.Record(ctx, actor, "person.offboard", "person", personID, map[string]any{"username": username}); err != nil {
 		return nil, err
 	}
-	return &OffboardResult{Person: p, Warnings: warnings}, nil
+	// Tell the other modules (the wiki orphans their private space). Only
+	// meaningful when the person ever had an IdP account.
+	if acc.ExternalID != "" {
+		warnings = append(warnings, s.notifyOffboardHooks(ctx, acc.ExternalID, username)...)
+	}
+	return &OffboardResult{Username: username, Warnings: warnings}, nil
 }
 
 // sendDeletedNotice tells the person (at their private email) that their
@@ -427,7 +576,7 @@ func (s *LifecycleService) sendDeletedNotice(ctx context.Context, p *domain.Pers
 	if s.mailer == nil {
 		return mail.ErrNotConfigured
 	}
-	if p.EmailMissing || strings.TrimSpace(p.Email) == "" {
+	if strings.TrimSpace(p.Email) == "" {
 		return errors.New("they have no private email on file")
 	}
 	settings, err := s.settings.Get(ctx)

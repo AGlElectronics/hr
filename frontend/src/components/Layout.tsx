@@ -1,11 +1,8 @@
-import { useState } from 'react';
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import {
   Bug,
   Building2,
-  ChevronDown,
-  ClipboardCheck,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -18,7 +15,9 @@ import {
 import { getMe } from '@/api/me';
 import { isOidcAuthMode, signOutOidc } from '@/auth/oidc';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { setDebugMode, useDebugMode } from '@/lib/debug';
 import { useModuleBrand } from '@/lib/moduleBrand';
+import { useThemeSync } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
@@ -28,7 +27,6 @@ const NAV: NavItem[] = [
   { to: '/onboarding', label: 'Onboarding', icon: UserPlus },
   { to: '/people', label: 'People', icon: Users },
   { to: '/departments', label: 'Departments', icon: Building2 },
-  { to: '/approvals', label: 'Approvals', icon: ClipboardCheck },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -81,21 +79,24 @@ function NavLinks({ items }: { items: NavItem[] }) {
 }
 
 function DebugSection() {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const [open, setOpen] = useState(() => DEBUG_NAV.some((i) => pathname.startsWith(i.to)));
+  const on = useDebugMode();
   return (
     <div>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        role="switch"
+        aria-checked={on}
+        onClick={() => setDebugMode(!on)}
+        title="Shows technical details such as group names, role keys and permissions"
         className="flex w-full items-center gap-2.5 rounded-pill px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-        aria-expanded={open}
       >
         <Bug className="h-4 w-4 shrink-0" />
-        Debug
-        <ChevronDown className={cn('ml-auto h-4 w-4 transition-transform', open && 'rotate-180')} />
+        Debug mode
+        <span className={cn('ml-auto inline-flex h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors', on ? 'bg-primary' : 'bg-border')}>
+          <span className={cn('h-3 w-3 rounded-full bg-white shadow transition-transform', on && 'translate-x-3')} />
+        </span>
       </button>
-      {open && (
+      {on && (
         <div className="ml-3 border-l border-border pl-2">
           <NavLinks items={DEBUG_NAV} />
         </div>
@@ -134,6 +135,7 @@ function NoAccess({ username }: { username: string }) {
 
 export function Layout() {
   const me = useQuery({ queryKey: ['me'], queryFn: getMe });
+  useThemeSync('/api/me/preferences');
 
   if (me.isLoading) {
     return <div className="min-h-screen bg-background p-6 text-muted-foreground">Loading…</div>;

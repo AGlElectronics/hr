@@ -96,6 +96,19 @@ works from the `hr/` directory. All three Dockerfiles expect the build
 context to be `hr/` (not `hr/backend` or `hr/frontend`) so they can see
 both the source tree and `infra/nginx.conf`.
 
+## Backups
+
+In the full Con Services stack, Den's operator backs up HR's database and
+bucket every night along with everything else (see
+[docs/operations.md](../docs/operations.md)).
+
+**Run standalone, or on a database server Den's operator doesn't manage, HR
+is not backed up by anything. That is the administrator's job:** schedule a
+`pg_dump --format=custom` of the HR database and a copy of its bucket, encrypt
+both, and keep them somewhere other than the server. HR holds personal data
+(addresses, dates of birth, emergency contacts), so encrypt the backups and
+limit who can read them.
+
 ## Working locally without Docker
 
 ```sh
