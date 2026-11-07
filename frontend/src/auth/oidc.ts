@@ -1,7 +1,8 @@
 import { UserManager, WebStorageStateStore } from 'oidc-client-ts';
+import { runtimeConfig } from '@/runtime-config';
 
 export function isOidcAuthMode(): boolean {
-  return import.meta.env.VITE_AUTH_MODE === 'oidc';
+  return runtimeConfig().authMode === 'oidc';
 }
 
 let manager: UserManager | null | undefined;
@@ -10,8 +11,8 @@ export function getUserManager(): UserManager | null {
   if (manager !== undefined) {
     return manager;
   }
-  const authority = (import.meta.env.VITE_OIDC_AUTHORITY as string | undefined)?.trim();
-  const client_id = (import.meta.env.VITE_OIDC_CLIENT_ID as string | undefined)?.trim();
+  const authority = runtimeConfig().oidcAuthority;
+  const client_id = runtimeConfig().oidcClientId;
   if (!authority || !client_id) {
     manager = null;
     return null;
@@ -21,7 +22,7 @@ export function getUserManager(): UserManager | null {
     return null;
   }
   const scope =
-    (import.meta.env.VITE_OIDC_SCOPE as string | undefined)?.trim() || 'openid profile email';
+    runtimeConfig().oidcScope;
   manager = new UserManager({
     authority,
     client_id,
@@ -41,7 +42,7 @@ export function getUserManager(): UserManager | null {
 export async function signInWithOidc(returnPath: string): Promise<void> {
   const mgr = getUserManager();
   if (!mgr) {
-    throw new Error('OIDC is not configured (set VITE_OIDC_AUTHORITY and VITE_OIDC_CLIENT_ID).');
+    throw new Error('OIDC is not configured (set oidcAuthority and oidcClientId in /config.json).');
   }
   const safePath = returnPath.startsWith('/') ? returnPath : '/dashboard';
   try {

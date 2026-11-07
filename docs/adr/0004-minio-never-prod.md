@@ -4,6 +4,8 @@
 
 Accepted (scaffold phase).
 
+> **Update 2026-11-07:** MinIO stopped publishing community images, so the development and local-trial S3 server is now SeaweedFS (`chrislusf/seaweedfs:4.52`, service `s3`). The decision is unchanged: the bundled S3 server is for development and local trials only, and production uses a managed S3 service.
+
 ## Context
 
 The HR Compose stack includes MinIO as an S3-compatible object store for

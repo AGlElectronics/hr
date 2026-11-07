@@ -1,0 +1,7 @@
+{
+  "authMode": "oidc",
+  "oidcAuthority": "",
+  "oidcClientId": "",
+  "oidcScope": "openid profile email",
+  "apiBaseUrl": ""
+}

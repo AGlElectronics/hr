@@ -1,6 +1,11 @@
 import { defineConfig } from '@rsbuild/core';
 import { pluginReact } from '@rsbuild/plugin-react';
 
+// Build-time fallbacks for the web app settings. Images read the
+// installation's settings from /config.json at start-up (src/runtime-config.ts);
+// these VITE_* values only fill keys that file leaves out, which is how
+// `npm run dev` with a .env file works. Rsbuild does not forward process.env
+// into import.meta.env by itself, so they are mapped with `define` below.
 const viteEnv = {
   VITE_API_BASE_URL: process.env.VITE_API_BASE_URL ?? '',
   VITE_DEV_USER: process.env.VITE_DEV_USER ?? 'dev-hr-admin',

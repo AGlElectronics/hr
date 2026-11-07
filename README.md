@@ -5,14 +5,14 @@ registry, employment drafts, approvals, and the outbound Keycloak / Google
 Workspace provisioning jobs. See `docs/` for the full architecture; this
 README is strictly about getting the stack running locally.
 
-- **Backend:** Go 1.25, chi, pgx (hand-written queries for now — `sqlc.yaml`
+- **Backend:** Go 1.27, chi, pgx (hand-written queries for now — `sqlc.yaml`
   is wired for a later pass, see the note at the top of that file).
 - **Frontend:** React 19 + Rsbuild + TanStack Query + Tailwind.
 - **Database:** PostgreSQL 16, migrated via Goose (`cmd/migrate` one-shot).
-- **Object storage:** HR stores **no files** in this phase, so MinIO is
-  intentionally NOT wired into the Compose stack. The `S3_*` env schema is
+- **Object storage:** HR stores **no files** in this phase, so no S3 server is
+  intentionally wired into the Compose stack. The `S3_*` env schema is
   still read by `config.Load` so the first file-upload feature can land
-  without a config/code churn. If MinIO ever gets added back for local dev
+  without a config/code churn. If an S3 server (the suite uses SeaweedFS) gets added for local dev
   it is **local-dev only** and must never ship to production (ADR-0004,
   ADR-0005).
 

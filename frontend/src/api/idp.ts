@@ -1,3 +1,4 @@
+import { runtimeConfig } from '@/runtime-config';
 import { apiRequest } from './client';
 
 export type IdPGroupMember = {
@@ -22,8 +23,7 @@ export const listIdPGroups = () => apiRequest<{ available: boolean; groups: IdPG
 
 /** Keycloak admin console for the realm HR provisions into, derived from the OIDC authority. */
 export function keycloakConsoleUrl(section: 'groups' | 'users' = 'groups'): string {
-  const authority =
-    (import.meta.env.VITE_OIDC_AUTHORITY as string | undefined)?.trim() || 'http://localhost:8085/realms/conservices';
+  const authority = runtimeConfig().oidcAuthority || 'http://localhost:8085/realms/conservices';
   const m = authority.match(/^(.*)\/realms\/([^/]+)\/?$/);
   const base = m ? m[1] : 'http://localhost:8085';
   const realm = m ? m[2] : 'conservices';

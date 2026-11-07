@@ -3,7 +3,7 @@
 # HR API server image. Does NOT run migrations — those live in a separate
 # image (Dockerfile.migrate) that Compose orchestrates as a one-shot.
 
-FROM golang:1.25-alpine AS build
+FROM golang:1.27.3-alpine3.24 AS build
 WORKDIR /src
 
 ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false

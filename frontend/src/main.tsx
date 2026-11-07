@@ -1,26 +1,17 @@
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { QueryClientProvider } from '@tanstack/react-query';
-import { RouterProvider } from '@tanstack/react-router';
-
+// Must run before the router is constructed so OIDC callback query params
+// survive the first navigation.
 import '@/auth/captureCallbackUrl';
-import '@fontsource-variable/inter';
-import './styles.css';
-import { router } from '@/router';
-import { queryClient } from '@/lib/queryClient';
-import { installAuth } from '@/auth/installAuth';
 
-installAuth();
+import { loadRuntimeConfig, renderStartupError } from '@/runtime-config';
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {
   throw new Error('#root element missing from index.html');
 }
 
-createRoot(rootEl).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
-  </StrictMode>,
-);
+// The app is imported only after /config.json is in, so nothing (OIDC
+// client, API client, router) can read a setting before it is known.
+loadRuntimeConfig()
+  .then(() => import('./app'))
+  .then(({ startApp }) => startApp(rootEl))
+  .catch((err: unknown) => renderStartupError(rootEl, err));

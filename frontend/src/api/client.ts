@@ -1,10 +1,11 @@
 // Typed fetch wrapper for the HR API.
 // Auth: OIDC Bearer (suite) or X-Dev-User via installAuth().
 
-const API_BASE_URL =
+import { runtimeConfig } from '@/runtime-config';
+
+const apiBaseUrl = () =>
   (typeof process !== 'undefined' ? process.env.HR_API_BASE_URL : undefined) ??
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
-  '';
+  runtimeConfig().apiBaseUrl;
 
 export type ApiErrorBody = {
   error: {
@@ -51,7 +52,7 @@ type RequestOpts = {
 
 export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   const url = new URL(
-    path.startsWith('http') ? path : `${API_BASE_URL}${path}`,
+    path.startsWith('http') ? path : `${apiBaseUrl()}${path}`,
     window.location.origin,
   );
   if (opts.query) {
