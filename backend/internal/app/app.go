@@ -109,7 +109,10 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		logger.Warn().Msg("SMTP_HOST not set — HR cannot email offboarding notices")
 	}
 
-	den := denlink.New(pool, denlink.Config{Slug: "hr", Version: Version, InternalURL: cfg.DenInternalURL}, logger)
+	den := denlink.New(pool, denlink.Config{Slug: "hr", Version: Version, InternalURL: cfg.DenInternalURL, Mode: cfg.DenMode}, logger)
+	if err := den.Restore(ctx); err != nil {
+		logger.Warn().Err(err).Msg("den link: load failed")
+	}
 	go den.Run(ctx)
 
 	gate := httpx.NewRoleGate(cfg, pool, idp, logger)

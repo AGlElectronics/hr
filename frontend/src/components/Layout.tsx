@@ -1,5 +1,5 @@
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Bug,
   Building2,
@@ -12,8 +12,10 @@ import {
   Users,
 } from 'lucide-react';
 
+import { isDenPairingRequired, useDenState } from '@/api/den';
 import { getMe } from '@/api/me';
 import { isOidcAuthMode, signOutOidc } from '@/auth/oidc';
+import { DenConnection } from '@/components/DenConnection';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { setDebugMode, useDebugMode } from '@/lib/debug';
 import { useModuleBrand } from '@/lib/moduleBrand';
@@ -133,8 +135,36 @@ function NoAccess({ username }: { username: string }) {
   );
 }
 
+/**
+ * Shown instead of the app while the backend runs with DEN_MODE=required and is not paired.
+ * Everyone with HR access may manage the Den connection, so there is no waiting variant.
+ */
+function DenPairingGate() {
+  const qc = useQueryClient();
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background p-6 text-foreground">
+      <div className="w-full max-w-xl space-y-4 rounded-lg border border-border bg-card p-6">
+        <div className="flex justify-center">
+          <Wordmark />
+        </div>
+        <h1 className="text-center text-xl font-bold">Connect this module to Den</h1>
+        <ol className="list-decimal space-y-1 pl-5 text-sm">
+          <li>In Den, open Modules and click Pair next to HR</li>
+          <li>Copy the pairing URL (valid 15 minutes)</li>
+          <li>Paste it below</li>
+        </ol>
+        <DenConnection base="/api/den" onPaired={() => void qc.invalidateQueries()} />
+        <div className="flex justify-center gap-3 text-sm">
+          <SignOutButton />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Layout() {
   const me = useQuery({ queryKey: ['me'], queryFn: getMe });
+  const denState = useDenState();
   useThemeSync('/api/me/preferences');
 
   if (me.isLoading) {
@@ -142,6 +172,9 @@ export function Layout() {
   }
   if (me.data && !me.data.has_access) {
     return <NoAccess username={me.data.username} />;
+  }
+  if (me.data && isDenPairingRequired(denState.data)) {
+    return <DenPairingGate />;
   }
 
   return (

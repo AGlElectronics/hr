@@ -97,10 +97,11 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 	den := deps.Den
 	if den == nil {
-		den = denlink.New(deps.Pool, denlink.Config{Slug: "hr", Version: version}, deps.Logger)
+		den = denlink.New(deps.Pool, denlink.Config{Slug: "hr", Version: version, Mode: deps.Config.DenMode}, deps.Logger)
 	}
 	r.Get("/api/brand", den.BrandHandler("/api/brand"))
 	r.Get("/api/brand/{role}", den.AssetHandler)
+	r.Get("/api/den/state", den.StateHandler)
 
 	auditWriter := audit.NewWriter(deps.Pool, deps.Logger)
 	settingsSvc := service.NewSettingsService(deps.Pool, auditWriter, den)
@@ -149,6 +150,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	notify := &notifyHandler{svc: notifySvc}
 
 	r.Route("/api", func(api chi.Router) {
+		api.Use(den.RequirePaired)
 		api.Use(auth.Middleware(deps.Config, deps.OIDCVerifier))
 
 		api.Get("/me", meHandler(deps.Config))
