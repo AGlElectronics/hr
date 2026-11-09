@@ -1,5 +1,11 @@
 # HR
 
+> [!WARNING]
+> ## **NOT READY FOR PRODUCTION**
+>
+> Con Services is under active development. Expect breaking changes, missing
+> features and bugs. Do not use it for real events or real data yet.
+
 HR provisioning module for the Awoostria service stack. Owns the people
 registry, employment drafts, approvals, and the outbound Keycloak / Google
 Workspace provisioning jobs. See `docs/` for the full architecture; this
