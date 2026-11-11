@@ -162,32 +162,48 @@ FROM employment_drafts WHERE id = $1
 	return d, nil
 }
 
-// List returns drafts optionally filtered by state. Pagination is deferred.
-func (s *DraftService) List(ctx context.Context, state string) ([]domain.EmploymentDraft, error) {
-	var (
-		rows pgx.Rows
-		err  error
-	)
-	if state != "" {
-		rows, err = s.pool.Query(ctx, `
-SELECT id, person_id, department_id, title, start_date, end_date, state, COALESCE(notes, ''), created_by, created_at, updated_at
-FROM employment_drafts WHERE state = $1 ORDER BY updated_at DESC`, state)
-	} else {
-		rows, err = s.pool.Query(ctx, `
-SELECT id, person_id, department_id, title, start_date, end_date, state, COALESCE(notes, ''), created_by, created_at, updated_at
-FROM employment_drafts ORDER BY updated_at DESC`)
+// ListDraftsInput filters and pages the onboarding list.
+type ListDraftsInput struct {
+	State string
+	// Query matches the person's names and email.
+	Query string
+	// DepartmentIDs, when not nil, limits the list to these departments.
+	DepartmentIDs []uuid.UUID
+	Limit, Offset int
+}
+
+// List returns one page of drafts, newest first, with the person's and
+// department's names.
+func (s *DraftService) List(ctx context.Context, in ListDraftsInput) (*Page[domain.EmploymentDraft], error) {
+	in.Limit, in.Offset = NormalizePaging(in.Limit, in.Offset)
+	q := "%" + strings.ToLower(strings.TrimSpace(in.Query)) + "%"
+	scoped := in.DepartmentIDs != nil
+	if in.DepartmentIDs == nil {
+		in.DepartmentIDs = []uuid.UUID{}
 	}
+	rows, err := s.pool.Query(ctx, `
+SELECT d.id, d.person_id, d.department_id, d.title, d.start_date, d.end_date, d.state, COALESCE(d.notes, ''), d.created_by,
+       d.created_at, d.updated_at, p.display_name, COALESCE(dep.name, ''), count(*) OVER ()
+  FROM employment_drafts d
+  JOIN people p ON p.id = d.person_id
+  LEFT JOIN departments dep ON dep.id = d.department_id
+ WHERE ($1 = '' OR d.state = $1)
+   AND ($2 = '%%' OR lower(p.legal_name) LIKE $2 OR lower(p.display_name) LIKE $2 OR lower(p.email) LIKE $2)
+   AND (NOT $3 OR d.department_id = ANY($4))
+ ORDER BY d.updated_at DESC, d.id
+ LIMIT $5 OFFSET $6`, strings.TrimSpace(in.State), q, scoped, in.DepartmentIDs, in.Limit, in.Offset)
 	if err != nil {
 		return nil, httperror.Internal(err)
 	}
 	defer rows.Close()
-	out := make([]domain.EmploymentDraft, 0, 16)
+	out := &Page[domain.EmploymentDraft]{Items: []domain.EmploymentDraft{}, Limit: in.Limit, Offset: in.Offset}
 	for rows.Next() {
 		var d domain.EmploymentDraft
-		if err := rows.Scan(&d.ID, &d.PersonID, &d.DepartmentID, &d.Title, &d.StartDate, &d.EndDate, &d.State, &d.Notes, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.PersonID, &d.DepartmentID, &d.Title, &d.StartDate, &d.EndDate, &d.State, &d.Notes, &d.CreatedBy,
+			&d.CreatedAt, &d.UpdatedAt, &d.PersonName, &d.DepartmentName, &out.Total); err != nil {
 			return nil, httperror.Internal(err)
 		}
-		out = append(out, d)
+		out.Items = append(out.Items, d)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, httperror.Internal(err)

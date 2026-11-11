@@ -8,17 +8,23 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/AGlElectronics/hr/backend/internal/actor"
+	"github.com/AGlElectronics/hr/backend/internal/authz"
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
 )
 
-// Middleware authenticates API requests.
-//   - AUTH_MODE=dev: X-Dev-User (or DEV_DEFAULT_USER) stamps the actor; no gate.
+// Middleware authenticates API requests and works out the caller's HR roles.
+//   - AUTH_MODE=dev: X-Dev-User (or DEV_DEFAULT_USER) stamps the actor. The
+//     caller is an HR admin unless X-Dev-Groups lists other groups.
 //   - AUTH_MODE=oidc: requires a valid Bearer ID token from the shared Keycloak.
-func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier) func(http.Handler) http.Handler {
+//
+// resolver (may be nil) adds the caller's HR person record and the
+// departments they lead.
+func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier, resolver *authz.Resolver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
+			var a *actor.Actor
 
 			switch cfg.AuthMode {
 			case config.AuthModeDev, "":
@@ -29,7 +35,16 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier) func(http.Handle
 				if name == "" {
 					name = "dev-hr-admin"
 				}
-				ctx = actor.With(ctx, &actor.Actor{Username: name, Issuer: "dev:", Subject: name, HasAccess: true})
+				groups := cfg.AdminGroups
+				if raw := strings.TrimSpace(r.Header.Get("X-Dev-Groups")); raw != "" {
+					groups = nil
+					for _, g := range strings.Split(raw, ",") {
+						if g = strings.TrimSpace(g); g != "" {
+							groups = append(groups, g)
+						}
+					}
+				}
+				a = &actor.Actor{Username: name, Issuer: "dev:", Subject: name, Groups: groups}
 
 			case config.AuthModeOIDC:
 				if oidcVerifier == nil {
@@ -47,25 +62,41 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier) func(http.Handle
 					httperror.Render(w, r, httperror.Unauthorized("invalid token"))
 					return
 				}
-				ctx = actor.With(ctx, &actor.Actor{
-					Username:  DisplayName(claims),
-					Issuer:    claims.Issuer,
-					Subject:   claims.Subject,
-					Groups:    claims.Groups,
-					HasAccess: inAnyGroup(claims.Groups, cfg.AccessGroups),
-				})
+				a = &actor.Actor{Username: DisplayName(claims), Issuer: claims.Issuer, Subject: claims.Subject, Groups: claims.Groups}
 
 			default:
 				httperror.Render(w, r, httperror.Internal(errors.New("unknown auth mode")))
 				return
 			}
 
-			next.ServeHTTP(w, r.WithContext(ctx))
+			a.Roles = RolesFor(cfg, a.Groups)
+			a.HasAccess = len(a.Roles) > 0
+			if a.HasAccess {
+				if err := resolver.Resolve(ctx, a); err != nil {
+					httperror.Render(w, r, httperror.Internal(err))
+					return
+				}
+			}
+			next.ServeHTTP(w, r.WithContext(actor.With(ctx, a)))
 		})
 	}
 }
 
-// RequireAccess rejects callers who are signed in but not allowed to use HR.
+// RolesFor maps IdP groups to HR roles.
+func RolesFor(cfg *config.Config, groups []string) []string {
+	var roles []string
+	for _, rg := range []struct {
+		role   string
+		groups []string
+	}{{authz.RoleAdmin, cfg.AdminGroups}, {authz.RoleViewer, cfg.ViewerGroups}, {authz.RoleLead, cfg.LeadGroups}} {
+		if inAnyGroup(groups, rg.groups) {
+			roles = append(roles, rg.role)
+		}
+	}
+	return roles
+}
+
+// RequireAccess rejects callers who are signed in but hold no HR role.
 func RequireAccess(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a, ok := actor.FromContext(r.Context())
@@ -75,6 +106,36 @@ func RequireAccess(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Require rejects callers who hold p neither globally nor as a department
+// lead. Handlers check the department scope of lead permissions.
+func Require(p authz.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a, _ := actor.FromContext(r.Context())
+			if !authz.Any(a, p) {
+				httperror.Render(w, r, authz.Forbidden(p))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequireGlobal rejects callers who don't hold p everywhere (admin-only
+// routes such as settings and the Den connection).
+func RequireGlobal(p authz.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a, _ := actor.FromContext(r.Context())
+			if !authz.Global(a, p) {
+				httperror.Render(w, r, authz.Forbidden(p))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // inAnyGroup matches group names with or without Keycloak's leading "/".

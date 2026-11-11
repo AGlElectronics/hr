@@ -223,15 +223,11 @@ func (s *LifecycleService) externalID(ctx context.Context, personID uuid.UUID) (
 	return latestExternalID(ctx, s.pool, personID)
 }
 
-// latestExternalID is the IdP user id from the person's latest successful
-// IdP job ("" when they never had an account).
+// latestExternalID is the person's IdP user id ("" when they have no linked
+// account).
 func latestExternalID(ctx context.Context, pool *pgxpool.Pool, personID uuid.UUID) (string, error) {
 	var ext string
-	err := pool.QueryRow(ctx, `
-SELECT j.external_id FROM provisioning_jobs j
-  JOIN employment_drafts d ON d.id = j.draft_id
- WHERE d.person_id = $1 AND j.target = 'idp' AND j.status = 'succeeded' AND j.external_id IS NOT NULL
- ORDER BY j.started_at DESC LIMIT 1`, personID).Scan(&ext)
+	err := pool.QueryRow(ctx, `SELECT COALESCE(idp_user_id, '') FROM people WHERE id = $1`, personID).Scan(&ext)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
@@ -239,6 +235,22 @@ SELECT j.external_id FROM provisioning_jobs j
 		return "", httperror.Internal(err)
 	}
 	return ext, nil
+}
+
+// linkAccount stores the IdP user id (and subject, if not known yet) on the
+// person.
+func linkAccount(ctx context.Context, pool *pgxpool.Pool, personID uuid.UUID, userID, subject string) error {
+	if subject == "" {
+		subject = userID
+	}
+	_, err := pool.Exec(ctx, `
+UPDATE people SET idp_user_id = $2, idp_subject = CASE WHEN idp_user_id IS DISTINCT FROM $2 THEN $3 ELSE COALESCE(idp_subject, $3) END,
+       updated_at = now()
+ WHERE id = $1`, personID, userID, subject)
+	if err != nil {
+		return httperror.Internal(err)
+	}
+	return nil
 }
 
 // Access returns the person, their completed memberships and onboarding history.

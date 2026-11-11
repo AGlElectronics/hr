@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/AGlElectronics/hr/backend/internal/authz"
 )
 
 // Role is one entry in a module's catalog.
@@ -31,6 +33,9 @@ type Role struct {
 	Note        string   `json:"note,omitempty"`
 	// Default roles are ticked for every new onboarding; HR can untick them.
 	Default bool `json:"default,omitempty"`
+	// Privileged roles (administration of a module) may only be assigned
+	// by HR users with the "assign admin roles" permission.
+	Privileged bool `json:"privileged,omitempty"`
 }
 
 // Module is a module's catalog plus fetch status.
@@ -70,8 +75,9 @@ func ParseSources(raw string) []Source {
 	return out
 }
 
-// Self is HR's own role catalog.
-func Self() Module {
+// Self is HR's own role catalog. The groups are the first entries of
+// HR_ADMIN_GROUPS, HR_VIEWER_GROUPS and HR_LEAD_GROUPS.
+func Self(adminGroup, viewerGroup, leadGroup string) Module {
 	return Module{
 		Module:      "hr",
 		DisplayName: "HR",
@@ -81,11 +87,30 @@ func Self() Module {
 		Roles: []Role{{
 			Key:         "admin",
 			Label:       "HR admin",
-			Description: "Onboard and offboard people, manage departments and access.",
-			Group:       "hr-admin",
+			Description: "Everything in HR: onboard and offboard people, departments, access groups, settings, audit log.",
+			Group:       adminGroup,
+			Assignable:  true,
+			Privileged:  true,
+			Scope:       "organization",
+			Permissions: authz.PermissionsFor(authz.RoleAdmin),
+		}, {
+			Key:         "viewer",
+			Label:       "HR viewer",
+			Description: "Read-only access to people, departments and the audit log.",
+			Group:       viewerGroup,
 			Assignable:  true,
 			Scope:       "organization",
-			Permissions: []string{"people.manage", "drafts.manage", "provision.run"},
+			Permissions: authz.PermissionsFor(authz.RoleViewer),
+		}, {
+			Key:   "lead",
+			Label: "Department lead",
+			Description: "Onboard people, change their access, pause them and review new volunteers, " +
+				"only in the departments whose lead list includes them.",
+			Group:       leadGroup,
+			Assignable:  true,
+			Scope:       "department",
+			Permissions: authz.PermissionsFor(authz.RoleLead),
+			Note:        "Put the person on a department's lead list in HR (Departments); HR then gives them this group.",
 		}},
 	}
 }
@@ -94,6 +119,8 @@ func Self() Module {
 type Fetcher struct {
 	Sources []Source
 	Client  *http.Client
+	// Self is HR's own catalog, listed first.
+	Self Module
 }
 
 // FetchAll returns HR's own catalog followed by each source (ok or error).
@@ -112,7 +139,7 @@ func (f *Fetcher) FetchAll(ctx context.Context) []Module {
 		}(i, src)
 	}
 	wg.Wait()
-	return append([]Module{Self()}, out...)
+	return append([]Module{f.Self}, out...)
 }
 
 // DefaultRoles are the assignable roles modules mark as on by default, as

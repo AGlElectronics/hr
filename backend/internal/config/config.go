@@ -66,8 +66,11 @@ type Config struct {
 	OIDCIssuerURL string
 	OIDCClientID  string
 	OIDCAudience  string
-	// AccessGroups are the IdP groups allowed to use HR at all (OIDC mode).
-	AccessGroups []string
+	// AdminGroups, ViewerGroups and LeadGroups are the IdP groups that grant
+	// the HR roles admin, viewer (read-only) and lead (department lead).
+	AdminGroups  []string
+	ViewerGroups []string
+	LeadGroups   []string
 
 	// ProvisionerMode is IDP_PROVISIONER_MODE: manage, link or off.
 	ProvisionerMode string
@@ -146,7 +149,9 @@ func Load() (*Config, error) {
 		OIDCIssuerURL:               getEnv("OIDC_ISSUER_URL", ""),
 		OIDCClientID:                getEnv("OIDC_CLIENT_ID", ""),
 		OIDCAudience:                getEnv("OIDC_AUDIENCE", ""),
-		AccessGroups:                splitCSV(getEnv("HR_ACCESS_GROUPS", "hr-admin")),
+		AdminGroups:                 splitCSV(getEnv("HR_ADMIN_GROUPS", "hr-admin")),
+		ViewerGroups:                splitCSV(getEnv("HR_VIEWER_GROUPS", "hr-viewer")),
+		LeadGroups:                  splitCSV(getEnv("HR_LEAD_GROUPS", "hr-lead")),
 		ProvisionerMode:             strings.ToLower(getEnv("IDP_PROVISIONER_MODE", ProvisionerManage)),
 		KeycloakBaseURL:             getEnv("KEYCLOAK_BASE_URL", ""),
 		KeycloakRealm:               getEnv("KEYCLOAK_REALM", "conservices"),

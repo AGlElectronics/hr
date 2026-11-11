@@ -329,18 +329,22 @@ func (s *RoleGateService) withWaitingFor(ctx context.Context, grants []PendingGr
 	return grants, nil
 }
 
-// ListGrants returns gated roles, optionally filtered by status.
-func (s *RoleGateService) ListGrants(ctx context.Context, status string) ([]PendingGrant, error) {
-	var grants []PendingGrant
-	var err error
+// ListGrants returns gated roles, optionally filtered by status. depts, when
+// not nil, limits them to people in these departments (department leads).
+func (s *RoleGateService) ListGrants(ctx context.Context, status string, depts []uuid.UUID) ([]PendingGrant, error) {
 	switch status = strings.TrimSpace(status); status {
-	case "":
-		grants, err = s.queryGrants(ctx, "")
-	case GrantPending, GrantGranted, GrantOverridden, GrantRevoked:
-		grants, err = s.queryGrants(ctx, "WHERE g.status = $1", status)
+	case "", GrantPending, GrantGranted, GrantOverridden, GrantRevoked:
 	default:
 		return nil, httperror.Validation("validation failed", map[string]string{"status": "pending, granted, overridden or revoked"})
 	}
+	scoped := depts != nil
+	if depts == nil {
+		depts = []uuid.UUID{}
+	}
+	grants, err := s.queryGrants(ctx, `
+WHERE ($1 = '' OR g.status = $1)
+  AND (NOT $2 OR EXISTS (SELECT 1 FROM employment_drafts d WHERE d.person_id = g.person_id
+                          AND d.department_id = ANY($3) AND d.state <> 'rejected'))`, status, scoped, depts)
 	if err != nil {
 		return nil, err
 	}
@@ -354,6 +358,19 @@ func (s *RoleGateService) WaitingForPerson(ctx context.Context, personID uuid.UU
 		return nil, err
 	}
 	return s.withWaitingFor(ctx, grants)
+}
+
+// GrantPerson returns the person a pending grant belongs to.
+func (s *RoleGateService) GrantPerson(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	var person uuid.UUID
+	err := s.pool.QueryRow(ctx, `SELECT person_id FROM pending_role_grants WHERE id = $1`, id).Scan(&person)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, httperror.NotFound("pending grant")
+	}
+	if err != nil {
+		return uuid.Nil, httperror.Internal(err)
+	}
+	return person, nil
 }
 
 // Override grants a waiting role now, without the training.
@@ -711,10 +728,7 @@ SELECT DISTINCT ON (d.person_id, rp.role_name) d.person_id, d.id, rp.role_name, 
 // externalIDs is latestExternalID for many people at once.
 func (s *RoleGateService) externalIDs(ctx context.Context, persons []uuid.UUID) (map[uuid.UUID]string, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT DISTINCT ON (d.person_id) d.person_id, j.external_id FROM provisioning_jobs j
-  JOIN employment_drafts d ON d.id = j.draft_id
- WHERE d.person_id = ANY($1) AND j.target = 'idp' AND j.status = 'succeeded' AND j.external_id IS NOT NULL
- ORDER BY d.person_id, j.started_at DESC`, persons)
+SELECT id, idp_user_id FROM people WHERE id = ANY($1) AND idp_user_id IS NOT NULL`, persons)
 	if err != nil {
 		return nil, err
 	}

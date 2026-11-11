@@ -2,7 +2,11 @@
 // In AUTH_MODE=dev this comes from X-Dev-User; in oidc from verified claims.
 package actor
 
-import "context"
+import (
+	"context"
+
+	"github.com/google/uuid"
+)
 
 type ctxKey int
 
@@ -15,9 +19,36 @@ type Actor struct {
 	// preferences on them). Dev mode uses issuer "dev:" like Den.
 	Issuer, Subject string
 	Groups          []string
-	// HasAccess is true when the caller may use HR (member of an HR access
-	// group, or dev mode).
+	// Roles are the HR roles the caller holds through their groups:
+	// "admin", "viewer" and/or "lead" (see package authz).
+	Roles []string
+	// PersonID is the caller's own HR person record, when HR knows them.
+	PersonID *uuid.UUID
+	// LeadOf are the departments whose lead list includes the caller. Lead
+	// permissions apply only inside them.
+	LeadOf []uuid.UUID
+	// HasAccess is true when the caller holds any HR role.
 	HasAccess bool
+}
+
+// HasRole reports whether the caller holds the HR role.
+func (a *Actor) HasRole(role string) bool {
+	for _, r := range a.Roles {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+// Leads reports whether the caller is on the lead list of the department.
+func (a *Actor) Leads(dept uuid.UUID) bool {
+	for _, d := range a.LeadOf {
+		if d == dept {
+			return true
+		}
+	}
+	return false
 }
 
 // With attaches an Actor to ctx.

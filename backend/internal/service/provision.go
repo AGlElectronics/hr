@@ -94,6 +94,11 @@ func (s *ProvisionService) runIdPWith(ctx context.Context, draft *domain.Employm
 		}
 	}
 	s.finishJob(ctx, &job, domain.JobStatusSucceeded, msg, res.ExternalID)
+	if res.ExternalID != "" {
+		if err := linkAccount(ctx, s.pool, person.ID, res.ExternalID, ""); err != nil {
+			return job, res, err
+		}
+	}
 	return job, res, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/AGlElectronics/hr/backend/internal/actor"
+	"github.com/AGlElectronics/hr/backend/internal/config"
 )
 
 func TestInAnyGroup(t *testing.T) {
@@ -22,6 +23,17 @@ func TestInAnyGroup(t *testing.T) {
 		if got := inAnyGroup(c.have, c.want); got != c.ok {
 			t.Errorf("inAnyGroup(%v, %v) = %v, want %v", c.have, c.want, got, c.ok)
 		}
+	}
+}
+
+func TestRolesFor(t *testing.T) {
+	cfg := &config.Config{AdminGroups: []string{"hr-admin"}, ViewerGroups: []string{"hr-viewer"}, LeadGroups: []string{"/org/hr-lead"}}
+	got := RolesFor(cfg, []string{"/hr-viewer", "org/hr-lead", "stash-volunteer"})
+	if len(got) != 2 || got[0] != "viewer" || got[1] != "lead" {
+		t.Fatalf("RolesFor = %v", got)
+	}
+	if got := RolesFor(cfg, []string{"stash-volunteer"}); len(got) != 0 {
+		t.Fatalf("volunteer got HR roles %v", got)
 	}
 }
 

@@ -1,8 +1,11 @@
 package http
 
 import (
+	"context"
 	"net/http"
+	"strings"
 
+	"github.com/AGlElectronics/hr/backend/internal/authz"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
 	"github.com/AGlElectronics/hr/backend/internal/service"
@@ -13,12 +16,15 @@ type miscHandler struct {
 	dash      *service.DashboardService
 	directory provisioners.Directory // nil when the IdP cannot list groups
 	depts     *service.DepartmentService
+	// relevantGroups are the groups HR assigns or uses (HR roles, catalog
+	// roles, access groups); the group browser shows only these and the
+	// department groups.
+	relevantGroups func(ctx context.Context) map[string]bool
 }
 
 func (h *miscHandler) getSettings(w http.ResponseWriter, r *http.Request) {
 	s, err := h.settings.Get(r.Context())
-	if err != nil {
-		httperror.Render(w, r, err)
+	if !ok(w, r, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s)
@@ -26,22 +32,23 @@ func (h *miscHandler) getSettings(w http.ResponseWriter, r *http.Request) {
 
 func (h *miscHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var in service.Settings
-	if err := decodeJSON(r, &in); err != nil {
-		httperror.Render(w, r, err)
+	if !ok(w, r, decodeJSON(r, &in)) {
 		return
 	}
 	s, err := h.settings.Update(r.Context(), actorFrom(r), in)
-	if err != nil {
-		httperror.Render(w, r, err)
+	if !ok(w, r, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s)
 }
 
 func (h *miscHandler) dashboard(w http.ResponseWriter, r *http.Request) {
-	d, err := h.dash.Get(r.Context())
-	if err != nil {
-		httperror.Render(w, r, err)
+	depts, good := scope(w, r, authz.PeopleRead)
+	if !good {
+		return
+	}
+	d, err := h.dash.Get(r.Context(), depts)
+	if !ok(w, r, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
@@ -58,8 +65,9 @@ type idpGroupView struct {
 	DefaultFor []string `json:"default_for,omitempty"`
 }
 
-// idpGroups is a read-only view of the IdP's groups and members, annotated
-// with what HR uses each group for.
+// idpGroups is a read-only view of the IdP groups HR uses and their members,
+// annotated with what HR uses each group for. Other realm groups are left
+// out.
 func (h *miscHandler) idpGroups(w http.ResponseWriter, r *http.Request) {
 	if h.directory == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"available": false, "groups": []idpGroupView{}})
@@ -71,15 +79,27 @@ func (h *miscHandler) idpGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	depts, err := h.depts.List(r.Context())
-	if err != nil {
-		httperror.Render(w, r, err)
+	if !ok(w, r, err) {
 		return
+	}
+	relevant := map[string]bool{}
+	if h.relevantGroups != nil {
+		relevant = h.relevantGroups(r.Context())
+	}
+	for _, d := range depts {
+		relevant[d.GroupName], relevant[d.LeadGroup] = true, true
+		for _, role := range d.DefaultRoles {
+			relevant[role.GroupName] = true
+		}
 	}
 	out := make([]idpGroupView, 0, len(groups))
 	for _, g := range groups {
+		if !relevant[g.Name] && !relevant[strings.TrimPrefix(g.Path, "/")] {
+			continue
+		}
 		v := idpGroupView{GroupInfo: g}
 		for _, d := range depts {
-			if d.GroupName == g.Name {
+			if d.GroupName == g.Name || d.LeadGroup == g.Name {
 				v.Department = &struct {
 					ID   string `json:"id"`
 					Name string `json:"name"`

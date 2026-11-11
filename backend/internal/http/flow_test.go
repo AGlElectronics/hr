@@ -245,7 +245,7 @@ func runLifecycle(t *testing.T, do testClient, pool *pgxpool.Pool, personID, dra
 	// The stored account id no longer exists in the IdP: offboarding still
 	// works and says so, instead of failing on the 404.
 	if _, err := pool.Exec(context.Background(),
-		`UPDATE provisioning_jobs SET external_id = 'deleted-in-keycloak' WHERE draft_id = $1 AND target = 'idp'`, draftID); err != nil {
+		`UPDATE people SET idp_user_id = 'deleted-in-keycloak' WHERE id = $1`, personID); err != nil {
 		t.Fatal(err)
 	}
 	var accState struct {
@@ -344,8 +344,40 @@ func newTestClient(t *testing.T) (testClient, *pgxpool.Pool) {
 }
 
 // newTestClientWith lets a test adjust config and dependencies (after the
-// pool is open) before the router is built.
+// pool is open) before the router is built. Requests are made as the HR
+// admin "test-hr-admin".
 func newTestClientWith(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config.Config, deps *hrhttp.Deps)) (testClient, *pgxpool.Pool) {
+	t.Helper()
+	router, pool := newTestRouter(t, adjust)
+	return clientAs(router, "test-hr-admin", ""), pool
+}
+
+// clientAs makes requests as a dev user with the given groups (comma
+// separated; "" means an HR admin).
+func clientAs(router http.Handler, user, groups string) testClient {
+	return func(method, path string, body any) *httptest.ResponseRecorder {
+		var rdr *bytes.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			rdr = bytes.NewReader(b)
+		} else {
+			rdr = bytes.NewReader(nil)
+		}
+		req := httptest.NewRequest(method, path, rdr)
+		req.Header.Set("X-Dev-User", user)
+		if groups != "" {
+			req.Header.Set("X-Dev-Groups", groups)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+}
+
+func newTestRouter(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config.Config, deps *hrhttp.Deps)) (http.Handler, *pgxpool.Pool) {
 	t.Helper()
 	dsn := os.Getenv("HR_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -364,6 +396,9 @@ func newTestClientWith(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config
 		HTTPAddr:       ":0",
 		AuthMode:       config.AuthModeDev,
 		DevDefaultUser: "test-hr-admin",
+		AdminGroups:    []string{"hr-admin"},
+		ViewerGroups:   []string{"hr-viewer"},
+		LeadGroups:     []string{"hr-lead"},
 	}
 	deps := hrhttp.Deps{
 		Config:    cfg,
@@ -374,25 +409,7 @@ func newTestClientWith(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config
 	if adjust != nil {
 		adjust(pool, cfg, &deps)
 	}
-	router := hrhttp.NewRouter(deps, "test")
-
-	return func(method, path string, body any) *httptest.ResponseRecorder {
-		var rdr *bytes.Reader
-		if body != nil {
-			b, _ := json.Marshal(body)
-			rdr = bytes.NewReader(b)
-		} else {
-			rdr = bytes.NewReader(nil)
-		}
-		req := httptest.NewRequest(method, path, rdr)
-		req.Header.Set("X-Dev-User", "test-hr-admin")
-		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
-		return rec
-	}, pool
+	return hrhttp.NewRouter(deps, "test"), pool
 }
 
 // cleanupPerson removes a test person and everything hanging off them, since

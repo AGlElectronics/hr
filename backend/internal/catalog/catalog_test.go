@@ -24,7 +24,7 @@ func TestFetchAll(t *testing.T) {
 	}))
 	defer bad.Close()
 
-	f := &Fetcher{Sources: []Source{{Slug: "stash", URL: ok.URL}, {Slug: "events", URL: bad.URL}}}
+	f := &Fetcher{Sources: []Source{{Slug: "stash", URL: ok.URL}, {Slug: "events", URL: bad.URL}}, Self: Self("hr-admin", "hr-viewer", "hr-lead")}
 	mods := f.FetchAll(context.Background())
 	if len(mods) != 3 {
 		t.Fatalf("want 3 modules (hr+2), got %d", len(mods))

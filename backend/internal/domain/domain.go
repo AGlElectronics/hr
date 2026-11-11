@@ -39,8 +39,28 @@ type Person struct {
 	EmergencyContact EmergencyContact  `json:"emergency_contact"`
 	Status           PersonStatus      `json:"status"`
 	Notes            string            `json:"notes,omitempty"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	// IdPUserID is the account's id in the identity provider (Keycloak user
+	// id); IdPSubject is the OIDC `sub` other modules know the person by.
+	IdPUserID  string     `json:"idp_user_id,omitempty"`
+	IdPSubject string     `json:"idp_subject,omitempty"`
+	PausedAt   *time.Time `json:"paused_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+// PersonSummary is the reduced shape of the people list: enough to find
+// someone, without date of birth, phone, address or emergency contact.
+type PersonSummary struct {
+	ID          uuid.UUID    `json:"id"`
+	DisplayName string       `json:"display_name"`
+	LegalName   string       `json:"legal_name"`
+	Nickname    string       `json:"nickname,omitempty"`
+	Username    string       `json:"username,omitempty"`
+	Email       string       `json:"email"`
+	OrgEmail    string       `json:"org_email,omitempty"`
+	Status      PersonStatus `json:"status"`
+	IsBanned    bool         `json:"is_banned"`
+	UpdatedAt   time.Time    `json:"updated_at"`
 }
 
 // Address is a postal address. Country is an ISO 3166-1 alpha-2 code.
@@ -107,9 +127,27 @@ type Department struct {
 	IdPSyncedAt  *time.Time `json:"idp_synced_at,omitempty"`
 	IdPSyncError string     `json:"idp_sync_error,omitempty"`
 	MemberCount  int        `json:"member_count"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	// LeadGroup is the IdP group HR gives the department's leads
+	// ("dept-<slug>-lead"); other modules may use it too.
+	LeadGroup string    `json:"lead_group"`
+	Leads     []LeadRef `json:"leads"`
+	// DefaultBundles are access groups every new member gets by default.
+	DefaultBundles []uuid.UUID `json:"default_bundles"`
+	// ArchivedAt hides the department from new onboardings; existing
+	// memberships stay.
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
+
+// LeadRef is one person on a department's lead list.
+type LeadRef struct {
+	PersonID    uuid.UUID `json:"person_id"`
+	DisplayName string    `json:"display_name"`
+}
+
+// LeadGroupFor is the IdP group of a department's leads.
+func LeadGroupFor(deptGroup string) string { return deptGroup + "-lead" }
 
 // RoleRef is a module role reference ("<module>:<key>") plus its IdP group.
 type RoleRef struct {
@@ -133,6 +171,9 @@ type EmploymentDraft struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	Roles        []RolePlan `json:"roles,omitempty"`
+	// PersonName and DepartmentName are filled in lists.
+	PersonName     string `json:"person_name,omitempty"`
+	DepartmentName string `json:"department_name,omitempty"`
 }
 
 // RolePlan is a desired role / group assignment for a draft. On provisioning

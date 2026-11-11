@@ -54,7 +54,14 @@ func (s *OnboardingService) requireDepartment(ctx context.Context, id uuid.UUID)
 	if id == uuid.Nil {
 		return nil, httperror.Validation("validation failed", map[string]string{"department_id": "required"})
 	}
-	return s.depts.Get(ctx, id)
+	d, err := s.depts.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if d.ArchivedAt != nil {
+		return nil, httperror.Validation("validation failed", map[string]string{"department_id": "this department is archived"})
+	}
+	return d, nil
 }
 
 // applyDefaults sets the access plan to the suite-wide default roles plus

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -172,7 +173,7 @@ func (in *PersonInput) names() (legal, display string) {
 const personCols = `id, first_name, last_name, COALESCE(nickname, ''), COALESCE(username, ''),
 COALESCE(to_char(date_of_birth, 'YYYY-MM-DD'), ''), is_banned, legal_name, display_name, email,
 COALESCE(org_email, ''), COALESCE(phone, ''), address, social_handles, emergency_contact,
-status, COALESCE(notes, ''), created_at, updated_at`
+status, COALESCE(notes, ''), COALESCE(idp_user_id, ''), COALESCE(idp_subject, ''), paused_at, created_at, updated_at`
 
 // personInputFrom rebuilds the writeable surface of a stored person so the
 // same validation can check whether a profile is complete.
@@ -198,7 +199,8 @@ func scanPerson(row rowScanner) (*domain.Person, error) {
 	p := &domain.Person{}
 	var address, socials, emergency []byte
 	if err := row.Scan(&p.ID, &p.FirstName, &p.LastName, &p.Nickname, &p.Username, &p.DateOfBirth, &p.IsBanned, &p.LegalName, &p.DisplayName, &p.Email,
-		&p.OrgEmail, &p.Phone, &address, &socials, &emergency, &p.Status, &p.Notes, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		&p.OrgEmail, &p.Phone, &address, &socials, &emergency, &p.Status, &p.Notes, &p.IdPUserID, &p.IdPSubject, &p.PausedAt,
+		&p.CreatedAt, &p.UpdatedAt); err != nil {
 		return nil, err
 	}
 	p.SocialHandles = map[string]string{}
@@ -342,6 +344,10 @@ RETURNING `+personCols,
 
 // Update replaces every writeable field of a person.
 func (s *PeopleService) Update(ctx context.Context, actor string, id uuid.UUID, in PersonInput) (*domain.Person, error) {
+	prev, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	username, err := s.prepare(ctx, id, &in)
 	if err != nil {
 		return nil, err
@@ -367,17 +373,87 @@ RETURNING `+personCols,
 		}
 		return nil, httperror.Internal(err)
 	}
-	if err := s.audit.Record(ctx, actor, "person.update", "person", p.ID, map[string]any{
-		"username": p.Username, "status": p.Status,
-	}); err != nil {
-		return nil, err
+	if changes := PersonDiff(prev, p); len(changes) > 0 {
+		if err := s.audit.Record(ctx, actor, "person.update", "person", p.ID, map[string]any{
+			"username": p.Username, "changes": changes,
+		}); err != nil {
+			return nil, err
+		}
 	}
 	return p, nil
 }
 
+// sensitiveFields are recorded in the audit log as changed, without their
+// values, so the long-lived log does not copy personal data.
+var sensitiveFields = map[string]bool{
+	"date_of_birth": true, "phone": true, "address": true, "emergency_contact": true, "social_handles": true, "notes": true,
+}
+
+// PersonDiff lists the fields that differ between two versions of a person:
+// {"field": {"from": old, "to": new}}, or {"changed": true} for sensitive
+// fields.
+func PersonDiff(prev, next *domain.Person) map[string]any {
+	type pair struct{ from, to any }
+	fields := map[string]pair{
+		"first_name":        {prev.FirstName, next.FirstName},
+		"last_name":         {prev.LastName, next.LastName},
+		"nickname":          {prev.Nickname, next.Nickname},
+		"username":          {prev.Username, next.Username},
+		"email":             {prev.Email, next.Email},
+		"org_email":         {prev.OrgEmail, next.OrgEmail},
+		"status":            {prev.Status, next.Status},
+		"is_banned":         {prev.IsBanned, next.IsBanned},
+		"date_of_birth":     {prev.DateOfBirth, next.DateOfBirth},
+		"phone":             {prev.Phone, next.Phone},
+		"address":           {prev.Address, next.Address},
+		"emergency_contact": {prev.EmergencyContact, next.EmergencyContact},
+		"social_handles":    {prev.SocialHandles, next.SocialHandles},
+		"notes":             {prev.Notes, next.Notes},
+	}
+	out := map[string]any{}
+	for name, f := range fields {
+		a, _ := json.Marshal(f.from)
+		b, _ := json.Marshal(f.to)
+		if string(a) == string(b) {
+			continue
+		}
+		if sensitiveFields[name] {
+			out[name] = map[string]bool{"changed": true}
+		} else {
+			out[name] = map[string]any{"from": f.from, "to": f.to}
+		}
+	}
+	return out
+}
+
+// CriticalChanges lists the profile-critical fields that differ: the ones a
+// person may never change on their own record (names and login name, email
+// addresses, ban, status, notes).
+func CriticalChanges(prev *domain.Person, in PersonInput) []string {
+	var out []string
+	t := strings.TrimSpace
+	for name, changed := range map[string]bool{
+		"first_name": cleanName(in.FirstName) != prev.FirstName,
+		"last_name":  cleanName(in.LastName) != prev.LastName,
+		"nickname":   cleanName(in.Nickname) != prev.Nickname,
+		"email":      !strings.EqualFold(t(in.Email), prev.Email),
+		"org_email":  !strings.EqualFold(t(in.OrgEmail), prev.OrgEmail),
+		"is_banned":  in.IsBanned != prev.IsBanned,
+		"notes":      t(in.Notes) != prev.Notes,
+	} {
+		if changed {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // SetStatus moves a person's lifecycle status (used by draft transitions).
 func (s *PeopleService) SetStatus(ctx context.Context, id uuid.UUID, status domain.PersonStatus) error {
-	if _, err := s.pool.Exec(ctx, `UPDATE people SET status = $2, updated_at = now() WHERE id = $1`, id, string(status)); err != nil {
+	if _, err := s.pool.Exec(ctx, `
+UPDATE people SET status = $2, paused_at = CASE WHEN $2 = 'paused' THEN COALESCE(paused_at, now()) END, updated_at = now()
+ WHERE id = $1`, id, string(status)); err != nil {
 		return httperror.Internal(err)
 	}
 	return nil
@@ -395,15 +471,94 @@ func (s *PeopleService) Get(ctx context.Context, id uuid.UUID) (*domain.Person, 
 	return p, nil
 }
 
-// List returns people ordered by display name, optionally filtered by a
-// free-text query (name, nickname, login name, email) and status.
-func (s *PeopleService) List(ctx context.Context, query, status string) ([]domain.Person, error) {
-	q := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
-	rows, err := s.pool.Query(ctx, `SELECT `+personCols+` FROM people
-WHERE ($1 = '%%' OR lower(legal_name) LIKE $1 OR lower(display_name) LIKE $1 OR lower(email) LIKE $1
-       OR lower(COALESCE(username, '')) LIKE $1 OR lower(COALESCE(org_email, '')) LIKE $1)
-  AND ($2 = '' OR status = $2)
-ORDER BY lower(display_name)`, q, strings.TrimSpace(status))
+// ListPeopleInput filters and pages the people list.
+type ListPeopleInput struct {
+	// Query matches name, nickname, login name and email addresses.
+	Query  string
+	Status string
+	// DepartmentIDs, when not nil, limits the list to people with an
+	// onboarding or membership in these departments (department leads).
+	DepartmentIDs []uuid.UUID
+	// DepartmentID filters to one department (uuid.Nil: all).
+	DepartmentID uuid.UUID
+	Limit        int
+	Offset       int
+}
+
+// Page is one page of a list.
+type Page[T any] struct {
+	Items  []T `json:"items"`
+	Total  int `json:"total"`
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+// MaxPageSize caps limit on every paged list.
+const MaxPageSize = 200
+
+// NormalizePaging clamps limit (default 50) and offset.
+func NormalizePaging(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > MaxPageSize {
+		limit = MaxPageSize
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+// List returns one page of people (reduced fields) ordered by display name.
+func (s *PeopleService) List(ctx context.Context, in ListPeopleInput) (*Page[domain.PersonSummary], error) {
+	in.Limit, in.Offset = NormalizePaging(in.Limit, in.Offset)
+	q := "%" + strings.ToLower(strings.TrimSpace(in.Query)) + "%"
+	scoped := in.DepartmentIDs != nil
+	if in.DepartmentIDs == nil {
+		in.DepartmentIDs = []uuid.UUID{}
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT id, display_name, legal_name, COALESCE(nickname, ''), COALESCE(username, ''), email, COALESCE(org_email, ''),
+       status, is_banned, updated_at, count(*) OVER ()
+  FROM people
+ WHERE ($1 = '%%' OR lower(legal_name) LIKE $1 OR lower(display_name) LIKE $1 OR lower(email) LIKE $1
+        OR lower(COALESCE(nickname, '')) LIKE $1 OR lower(COALESCE(username, '')) LIKE $1 OR lower(COALESCE(org_email, '')) LIKE $1)
+   AND ($2 = '' OR status = $2)
+   AND (NOT $3 OR EXISTS (SELECT 1 FROM employment_drafts d WHERE d.person_id = people.id
+                           AND d.department_id = ANY($4) AND d.state <> 'rejected'))
+   AND ($5 = '00000000-0000-0000-0000-000000000000'::uuid OR EXISTS (SELECT 1 FROM employment_drafts d
+                           WHERE d.person_id = people.id AND d.department_id = $5 AND d.state <> 'rejected'))
+ ORDER BY lower(display_name), id
+ LIMIT $6 OFFSET $7`, q, strings.TrimSpace(in.Status), scoped, in.DepartmentIDs, in.DepartmentID, in.Limit, in.Offset)
+	if err != nil {
+		return nil, httperror.Internal(err)
+	}
+	defer rows.Close()
+	out := &Page[domain.PersonSummary]{Items: []domain.PersonSummary{}, Limit: in.Limit, Offset: in.Offset}
+	for rows.Next() {
+		var p domain.PersonSummary
+		if err := rows.Scan(&p.ID, &p.DisplayName, &p.LegalName, &p.Nickname, &p.Username, &p.Email, &p.OrgEmail,
+			&p.Status, &p.IsBanned, &p.UpdatedAt, &out.Total); err != nil {
+			return nil, httperror.Internal(err)
+		}
+		out.Items = append(out.Items, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, httperror.Internal(err)
+	}
+	if len(out.Items) == 0 && in.Offset > 0 {
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM people`).Scan(&out.Total); err != nil {
+			return nil, httperror.Internal(err)
+		}
+	}
+	return out, nil
+}
+
+// All returns every person with every field (internal use: dashboard,
+// retention).
+func (s *PeopleService) All(ctx context.Context) ([]domain.Person, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+personCols+` FROM people ORDER BY lower(display_name)`)
 	if err != nil {
 		return nil, httperror.Internal(err)
 	}

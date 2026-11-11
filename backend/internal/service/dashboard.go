@@ -55,11 +55,36 @@ type Dashboard struct {
 	Departments  []DepartmentSummary `json:"departments"`
 }
 
-// Get builds the dashboard.
-func (s *DashboardService) Get(ctx context.Context) (*Dashboard, error) {
-	people, err := s.people.List(ctx, "", "")
+// Get builds the dashboard. scope nil shows everything; otherwise only the
+// people and departments of these departments (department leads).
+func (s *DashboardService) Get(ctx context.Context, scope []uuid.UUID) (*Dashboard, error) {
+	all, err := s.people.All(ctx)
 	if err != nil {
 		return nil, err
+	}
+	people := all
+	if scope != nil {
+		inScope := map[uuid.UUID]bool{}
+		rows, err := s.pool.Query(ctx, `
+SELECT DISTINCT person_id FROM employment_drafts WHERE department_id = ANY($1) AND state <> 'rejected'`, scope)
+		if err != nil {
+			return nil, httperror.Internal(err)
+		}
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, httperror.Internal(err)
+			}
+			inScope[id] = true
+		}
+		rows.Close()
+		people = people[:0:0]
+		for _, p := range all {
+			if inScope[p.ID] {
+				people = append(people, p)
+			}
+		}
 	}
 	out := &Dashboard{StatusCounts: map[string]int{}, Attention: []AttentionItem{}, Departments: []DepartmentSummary{}}
 	byID := map[uuid.UUID]*domain.Person{}
@@ -118,6 +143,9 @@ SELECT d.id, d.person_id,
 		return nil, err
 	}
 	for _, d := range depts {
+		if scope != nil && !containsID(scope, d.ID) {
+			continue
+		}
 		sum := DepartmentSummary{Department: d}
 		if err := s.pool.QueryRow(ctx, `
 SELECT COUNT(DISTINCT p.id) FILTER (WHERE dr.state = 'active' AND p.status IN ('active','paused')),
@@ -129,6 +157,15 @@ SELECT COUNT(DISTINCT p.id) FILTER (WHERE dr.state = 'active' AND p.status IN ('
 		out.Departments = append(out.Departments, sum)
 	}
 	return out, nil
+}
+
+func containsID(ids []uuid.UUID, id uuid.UUID) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }
 
 var fieldLabels = map[string]string{
