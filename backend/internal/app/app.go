@@ -115,14 +115,16 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 	go den.Run(ctx)
 
-	// Den's SMTP setting wins while paired; SMTP_* is the fallback.
+	// Den's SMTP setting wins while paired. When Den sets smtp.host and
+	// password_set, the password is fetched from Den for the send.
+	// SMTP_* (including SMTP_PASSWORD) is used only when Den sets no server.
 	envSMTP := mail.NewSMTP(mail.SMTPConfig{
 		Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
 		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName,
 	})
-	mailer := &mail.Dynamic{Fallback: envSMTP, Pick: func() (mail.SMTPConfig, bool) {
+	mailer := &mail.Dynamic{Fallback: envSMTP, Pick: func(ctx context.Context) (mail.SMTPConfig, bool, error) {
 		s, set := den.ModuleSettings().SMTP()
-		return mail.FromDen(s, set, cfg.SMTPPassword)
+		return mail.FromDen(ctx, den, s, set)
 	}}
 	if envSMTP != nil {
 		logger.Info().Str("host", cfg.SMTPHost).Msg("own SMTP configured (Den's SMTP wins when paired and set)")

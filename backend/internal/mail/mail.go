@@ -42,35 +42,57 @@ type SMTPConfig struct {
 	Security string
 }
 
-// FromDen turns Den's SMTP module setting into a config. Den never sends
-// the password in the bundle; password (HR's SMTP_PASSWORD) is used when
-// Den says the server needs one. ok is false when Den sets no server, or
-// when it needs a password HR does not have.
-func FromDen(s denlink.SMTP, set bool, password string) (SMTPConfig, bool) {
-	if !set {
-		return SMTPConfig{}, false
-	}
-	c := SMTPConfig{Host: s.Host, Port: s.Port, Username: s.Username, From: s.From, FromName: s.FromName, Security: s.Security}
-	if s.PasswordSet {
-		if password == "" {
-			return SMTPConfig{}, false
-		}
-		c.Password = password
-	}
-	return c, true
+// passwordSource fetches the SMTP password Den keeps out of the bundle.
+// *denlink.Client implements it (SMTPPassword).
+type passwordSource interface {
+	SMTPPassword(ctx context.Context) (string, error)
 }
 
-// Dynamic picks the server for each message: Pick (Den's settings while
-// paired) when it returns ok, else Fallback (SMTP_*; may be nil).
+// FromDen turns Den's SMTP module setting into a config. set is false when
+// Den sets no smtp.host: ok is false and the caller keeps its own SMTP_*
+// settings, including SMTP_PASSWORD. When Den sets a server and
+// password_set, the password comes from den.SMTPPassword and the
+// environment password is not used. An error from that call is returned
+// so the send does not fall back to SMTP_PASSWORD. When password_set is
+// false the config has no password. An empty password with a nil error
+// means Den holds none.
+func FromDen(ctx context.Context, den passwordSource, s denlink.SMTP, set bool) (SMTPConfig, bool, error) {
+	if !set || strings.TrimSpace(s.Host) == "" {
+		return SMTPConfig{}, false, nil
+	}
+	c := SMTPConfig{Host: s.Host, Port: s.Port, Username: s.Username, From: s.From, FromName: s.FromName, Security: s.Security}
+	if !s.PasswordSet {
+		return c, true, nil
+	}
+	if den == nil {
+		return SMTPConfig{}, false, denlink.ErrNotPaired
+	}
+	pw, err := den.SMTPPassword(ctx)
+	if err != nil {
+		return SMTPConfig{}, false, err
+	}
+	c.Password = pw
+	return c, true, nil
+}
+
+// Dynamic picks the server for each message. Pick (Den's settings while
+// paired) wins when it returns ok. Fallback (SMTP_*, may be nil) is used
+// only when Den sets no server. An error from Pick is returned as-is, so
+// a Den server whose password cannot be fetched does not send with
+// SMTP_PASSWORD instead.
 type Dynamic struct {
-	Pick     func() (SMTPConfig, bool)
+	Pick     func(ctx context.Context) (SMTPConfig, bool, error)
 	Fallback *SMTP
 }
 
 // Send delivers m through the server picked now.
 func (d *Dynamic) Send(ctx context.Context, m Message) error {
 	if d.Pick != nil {
-		if cfg, ok := d.Pick(); ok {
+		cfg, ok, err := d.Pick(ctx)
+		if err != nil {
+			return err
+		}
+		if ok {
 			return NewSMTP(cfg).Send(ctx, m)
 		}
 	}

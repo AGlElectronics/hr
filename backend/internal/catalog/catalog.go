@@ -181,10 +181,10 @@ type Cache interface {
 type Fetcher struct {
 	// Sources is ROLE_CATALOG_SOURCES: replaces a discovered URL for the
 	// same slug and adds slugs Den does not know. Alone when Discover is
-	// unset (standalone, or Den has no modules call yet).
+	// unset or returns nothing (standalone HR).
 	Sources []Source
 	// Discover lists the modules paired in Den (GET
-	// /api/v1/integrations/modules). Nil until denlink can make that call.
+	// /api/v1/integrations/modules). Nil in tests that pass Sources only.
 	Discover func(ctx context.Context) []Source
 	Cache    Cache
 	Client   *http.Client
@@ -202,8 +202,8 @@ type Fetcher struct {
 
 // sources is Den's paired-module list, with ROLE_CATALOG_SOURCES applied on
 // top: a listed slug replaces the URL Den reported, and a slug Den does not
-// know is added. With nothing discovered (standalone, or Den has no modules
-// call yet) the override list is the whole set.
+// know is added. With nothing discovered (standalone, or Den could not be
+// asked) the override list is the whole set.
 func (f *Fetcher) sources(ctx context.Context) []Source {
 	var discovered []Source
 	if f.Discover != nil {

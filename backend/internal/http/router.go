@@ -157,6 +157,11 @@ func NewRouter(deps Deps, version string) http.Handler {
 	if den == nil {
 		den = denlink.New(deps.Pool, cfg.DenConfig(version), deps.Logger)
 	}
+	// Den's paired modules, with ROLE_CATALOG_SOURCES applied on top
+	// (a listed slug replaces the URL, a new slug is added).
+	fetcher.Discover = func(ctx context.Context) []catalog.Source {
+		return discoverRoleCatalogs(ctx, den, deps.Logger)
+	}
 	r.Get("/api/brand", den.BrandHandler("/api/brand"))
 	r.Get("/api/brand/{role}", den.AssetHandler)
 	r.Get("/api/den/state", den.StateHandler)

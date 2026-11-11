@@ -43,9 +43,11 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   module's secret.
 - The Den card shows a revoked credential and **Pair again**. The stored
   link keeps `den_link.revoked_at` (migration, and `denlink`'s own upgrade).
-- Den's SMTP module setting is used while HR is paired, when Den sets a
-  server. The password is still `SMTP_PASSWORD` (Den does not send it).
-  `smtp.security` of `starttls`, `tls` or `none` is honoured.
+- Den's SMTP module setting is used while HR is paired, when Den sets
+  `smtp.host`. When Den also sets `password_set`, the password is fetched
+  from Den for that send and is not stored in HR. `SMTP_PASSWORD` is used
+  only when Den sets no mail server. `smtp.security` of `starttls`, `tls`
+  or `none` is honoured.
 - The Google Workspace connector uses the shared client when
   `GOOGLE_WORKSPACE_CREDENTIALS_FILE` is set: accounts for everyone,
   department groups, suspend on offboarding, and deletion after
@@ -53,9 +55,13 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   the key file the connector stays unavailable.
 - The web app's nginx applies the shared security headers only on the
   pages it serves. Origins come from `KEYCLOAK_ORIGIN`, `DEN_ORIGIN`,
-  `S3_ORIGIN` and `EXTRA_CONNECT_SRC`. Address search is proxied through
-  HR, so the browser's `connect-src 'self'` covers Photon; the backend
-  is allowed to call `photon.komoot.io`.
+  `S3_ORIGIN` and `EXTRA_CONNECT_SRC`. `EXTRA_FRAME_SRC` stays empty.
+  `/silent-callback.html` is the one page the app may frame itself, so
+  silent sign-in can finish; it sends `frame-ancestors 'self'` and
+  `X-Frame-Options: SAMEORIGIN`. The Helm chart's nginx config includes
+  the same location. Every other response stays unframeable.
+  Address search is proxied through HR, so the browser's `connect-src
+  'self'` covers Photon; the backend is allowed to call `photon.komoot.io`.
 
 ### Added
 
@@ -79,11 +85,14 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   groups; a person page shows which access group each role came from.
   Changing an access group updates everyone who has it in the background.
 - Role catalogs are discovered from the modules paired with Den
-  (`ROLE_CATALOG_SOURCES` still overrides). HR keeps the last catalog of each
-  module for when it is offline, only assigns roles a catalog publishes, and
-  marks roles a module stopped publishing as "retired" on the people holding
-  them. Admin-type roles (`privileged` in the catalog, or named `admin` /
-  `*-admin`) can only be assigned by HR admins.
+  (`GET /api/v1/integrations/modules`). A module with an empty slug or no
+  catalog URL is skipped. `ROLE_CATALOG_SOURCES` still replaces a URL and
+  adds modules Den does not list; a standalone HR uses only that list.
+  HR keeps the last catalog of each module for when it is offline, only
+  assigns roles a catalog publishes, and marks roles a module stopped
+  publishing as "retired" on the people holding them. Admin-type roles
+  (`privileged` in the catalog, or named `admin` / `*-admin`) can only be
+  assigned by HR admins.
 - Completing an onboarding runs in the background: the page follows the
   job, failed attempts are retried, and onboardings stuck by a crash are
   recovered. Onboardings that are still drafts can be cancelled. A "Resend
