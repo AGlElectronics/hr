@@ -44,7 +44,8 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier, resolver *authz.
 						}
 					}
 				}
-				a = &actor.Actor{Username: name, Issuer: "dev:", Subject: name, Groups: groups}
+				a = &actor.Actor{Username: name, Issuer: "dev:", Subject: name, Groups: groups,
+					Email: strings.TrimSpace(r.Header.Get("X-Dev-Email")), EmailVerified: r.Header.Get("X-Dev-Email") != ""}
 
 			case config.AuthModeOIDC:
 				if oidcVerifier == nil {
@@ -62,7 +63,8 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier, resolver *authz.
 					httperror.Render(w, r, httperror.Unauthorized("invalid token"))
 					return
 				}
-				a = &actor.Actor{Username: DisplayName(claims), Issuer: claims.Issuer, Subject: claims.Subject, Groups: claims.Groups}
+				a = &actor.Actor{Username: DisplayName(claims), Issuer: claims.Issuer, Subject: claims.Subject, Groups: claims.Groups,
+					Email: claims.Email, EmailVerified: claims.EmailVerified}
 
 			default:
 				httperror.Render(w, r, httperror.Internal(errors.New("unknown auth mode")))

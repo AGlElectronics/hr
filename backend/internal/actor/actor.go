@@ -18,7 +18,10 @@ type Actor struct {
 	// Issuer and Subject identify the person at the IdP (Den keys shared
 	// preferences on them). Dev mode uses issuer "dev:" like Den.
 	Issuer, Subject string
-	Groups          []string
+	// Email and EmailVerified come from the token (self-service form).
+	Email         string
+	EmailVerified bool
+	Groups        []string
 	// Roles are the HR roles the caller holds through their groups:
 	// "admin", "viewer" and/or "lead" (see package authz).
 	Roles []string

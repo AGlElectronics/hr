@@ -69,6 +69,7 @@ type Services struct {
 	// Maintenance holds the periodic housekeeping tasks.
 	Maintenance *service.Maintenance
 	Workspace   *service.WorkspaceService
+	Review      *service.ReviewService
 }
 
 // NewRoleGate builds the training-requirement service from config. Gating
@@ -211,6 +212,10 @@ func NewRouter(deps Deps, version string) http.Handler {
 		lifecycleSvc.SetWorkspace(wsSvc)
 	}
 	workspace := &workspaceHandler{svc: wsSvc}
+	scanner, _ := deps.IdP.(provisioners.UserScanner)
+	reviewSvc := service.NewReviewService(deps.Pool, auditWriter, peopleSvc, onboardingSvc, draftSvc, provSvc, lifecycleSvc, scanner, accounts,
+		cfg.ProvisionerMode == config.ProvisionerLink, deps.Logger)
+	review := &reviewHandler{svc: reviewSvc, depts: deptSvc, chk: chk}
 	jobs.Handle(service.JobBundleSync, service.JobHandler{Run: func(ctx context.Context, j service.Job) error {
 		var p struct {
 			BundleID uuid.UUID `json:"bundle_id"`
@@ -276,7 +281,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	maint.Add("workspace clean-up", wsSvc.Cleanup)
 	if deps.Services != nil {
 		*deps.Services = Services{Lifecycle: lifecycleSvc, Audit: auditSvc, Settings: settingsSvc, People: peopleSvc, Provision: provSvc,
-			Maintenance: maint, Workspace: wsSvc}
+			Maintenance: maint, Workspace: wsSvc, Review: reviewSvc}
 	}
 
 	require := auth.Require
@@ -296,6 +301,11 @@ func NewRouter(deps Deps, version string) http.Handler {
 		})
 		api.Get("/me/preferences", prefs)
 		api.Put("/me/preferences", prefs)
+
+		// "Waiting for a coordinator": any signed-in person, own entry only.
+		api.Get("/self-service/registration", review.selfGet)
+		api.Put("/self-service/registration", review.selfSubmit)
+		api.Get("/self-service/departments", review.selfDepartments)
 
 		api.Group(func(api chi.Router) {
 			api.Use(auth.RequireAccess)
@@ -355,6 +365,17 @@ func NewRouter(deps Deps, version string) http.Handler {
 					return
 				}
 				writeJSON(w, http.StatusOK, map[string]any{"items": items, "retention": rs})
+			})
+
+			api.Route("/review", func(rr chi.Router) {
+				rr.Use(require(authz.ReviewManage))
+				rr.Get("/", review.list)
+				rr.With(global(authz.ReviewManage)).Post("/scan", review.scan)
+				rr.Get("/{id}", review.get)
+				rr.Put("/{id}", review.update)
+				rr.Post("/{id}/accept", review.accept)
+				rr.Post("/{id}/merge", review.merge)
+				rr.Post("/{id}/reject", review.reject)
 			})
 
 			api.Route("/workspace", func(wr chi.Router) {

@@ -146,6 +146,9 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}, Version)
 	go jobs.Run(ctx, cfg.JobInterval)
 	go services.Maintenance.Run(ctx, cfg.MaintenanceInterval)
+	if cfg.ReviewScanInterval > 0 {
+		go services.Review.RunScans(ctx, cfg.ReviewScanInterval)
+	}
 
 	server := &nethttp.Server{
 		Addr:              cfg.HTTPAddr,

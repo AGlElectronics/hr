@@ -22,6 +22,7 @@ type Claims struct {
 	Issuer            string   `json:"iss"`
 	Subject           string   `json:"sub"`
 	Email             string   `json:"email"`
+	EmailVerified     bool     `json:"email_verified"`
 	PreferredUsername string   `json:"preferred_username"`
 	Name              string   `json:"name"`
 	Groups            []string `json:"groups"`

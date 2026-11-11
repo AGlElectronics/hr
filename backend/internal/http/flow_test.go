@@ -378,6 +378,11 @@ func newTestClientWith(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config
 // clientAs makes requests as a dev user with the given groups (comma
 // separated; "" means an HR admin).
 func clientAs(router http.Handler, user, groups string) testClient {
+	return clientAsWithEmail(router, user, groups, "")
+}
+
+// clientAsWithEmail also sets the (verified) email of the dev user.
+func clientAsWithEmail(router http.Handler, user, groups, email string) testClient {
 	return func(method, path string, body any) *httptest.ResponseRecorder {
 		var rdr *bytes.Reader
 		if body != nil {
@@ -390,6 +395,9 @@ func clientAs(router http.Handler, user, groups string) testClient {
 		req.Header.Set("X-Dev-User", user)
 		if groups != "" {
 			req.Header.Set("X-Dev-Groups", groups)
+		}
+		if email != "" {
+			req.Header.Set("X-Dev-Email", email)
 		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")

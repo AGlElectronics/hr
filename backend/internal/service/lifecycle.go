@@ -629,6 +629,52 @@ func (s *LifecycleService) SetStatus(ctx context.Context, actor string, personID
 	return &StatusResult{Person: p, Warnings: warnings}, nil
 }
 
+// LinkAccount links an existing IdP account to a person (review queue
+// merge): HR writes hrPersonId and the groups of the person's memberships.
+func (s *LifecycleService) LinkAccount(ctx context.Context, actor string, personID uuid.UUID, userID, subject string) ([]string, error) {
+	if err := linkAccount(ctx, s.pool, personID, userID, subject); err != nil {
+		return nil, err
+	}
+	warnings := []string{}
+	if s.accounts == nil {
+		return warnings, nil
+	}
+	acc, err := s.Access(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+	held, err := s.gate.waitingRoles(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+	add := []string{}
+	for _, m := range acc.Memberships {
+		if m.Department != nil {
+			add = append(add, m.Department.GroupName)
+		}
+		for _, r := range m.Roles {
+			if r.GroupName != "" && !held[r.RoleName] {
+				add = append(add, r.GroupName)
+			}
+		}
+	}
+	if lead, err := s.depts.LeadGroupsFor(ctx, personID); err == nil {
+		add = append(add, lead...)
+	}
+	if len(add) > 0 {
+		if err := s.accounts.UpdateMembership(ctx, userID, add, nil); err != nil {
+			warnings = append(warnings, idpFailure("add their groups", err).Error())
+		}
+	}
+	attrs := personAttributes(acc.Person)
+	attrs[provisioners.AttrHRPersonID] = personID.String()
+	if err := s.accounts.UpdateProfile(ctx, userID, provisioners.Profile{Email: acc.Person.Email, FirstName: acc.Person.FirstName,
+		LastName: acc.Person.LastName, Attributes: attrs}); err != nil {
+		warnings = append(warnings, idpFailure("write their HR attributes", err).Error())
+	}
+	return warnings, nil
+}
+
 // BanInput bans or unbans a person.
 type BanInput struct {
 	Banned bool   `json:"banned"`
