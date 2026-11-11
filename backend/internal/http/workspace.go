@@ -32,6 +32,14 @@ func (h *workspaceHandler) deleteNow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *workspaceHandler) sync(w http.ResponseWriter, r *http.Request) {
+	on, err := h.svc.Active(r.Context())
+	if !ok(w, r, err) {
+		return
+	}
+	if !on {
+		httperror.Render(w, r, httperror.Conflict("the Google Workspace connector is off or not available"))
+		return
+	}
 	if err := h.svc.SyncAllDepartments(r.Context()); err != nil {
 		httperror.Render(w, r, httperror.New(httperror.CodeUpstream, "Google Workspace: "+err.Error()))
 		return

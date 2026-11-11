@@ -401,6 +401,9 @@ func (s *SettingsService) Update(ctx context.Context, actor string, in Settings)
 			}
 		}
 	}
+	if in.Workspace.Enabled && !current.Workspace.Enabled && !s.workspaceAvailable {
+		fields["workspace.enabled"] = "the Google Workspace connector is not available in this HR version"
+	}
 	if fields["address_lookup_url"] == "" && in.AddressLookupURL != "" && s.addressURLCheck != nil {
 		if err := s.addressURLCheck(in.AddressLookupURL); err != nil {
 			fields["address_lookup_url"] = err.Error()

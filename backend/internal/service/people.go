@@ -519,19 +519,21 @@ func (s *PeopleService) List(ctx context.Context, in ListPeopleInput) (*Page[dom
 	if in.DepartmentIDs == nil {
 		in.DepartmentIDs = []uuid.UUID{}
 	}
-	rows, err := s.pool.Query(ctx, `
-SELECT id, display_name, legal_name, COALESCE(nickname, ''), COALESCE(username, ''), email, COALESCE(org_email, ''),
-       status, is_banned, updated_at, count(*) OVER ()
-  FROM people
+	const where = `
  WHERE ($1 = '%%' OR lower(legal_name) LIKE $1 OR lower(display_name) LIKE $1 OR lower(email) LIKE $1
         OR lower(COALESCE(nickname, '')) LIKE $1 OR lower(COALESCE(username, '')) LIKE $1 OR lower(COALESCE(org_email, '')) LIKE $1)
    AND ($2 = '' OR status = $2)
    AND (NOT $3 OR EXISTS (SELECT 1 FROM employment_drafts d WHERE d.person_id = people.id
                            AND d.department_id = ANY($4) AND d.state <> 'rejected'))
    AND ($5 = '00000000-0000-0000-0000-000000000000'::uuid OR EXISTS (SELECT 1 FROM employment_drafts d
-                           WHERE d.person_id = people.id AND d.department_id = $5 AND d.state <> 'rejected'))
+                           WHERE d.person_id = people.id AND d.department_id = $5 AND d.state <> 'rejected'))`
+	args := []any{q, strings.TrimSpace(in.Status), scoped, in.DepartmentIDs, in.DepartmentID}
+	rows, err := s.pool.Query(ctx, `
+SELECT id, display_name, legal_name, COALESCE(nickname, ''), COALESCE(username, ''), email, COALESCE(org_email, ''),
+       status, is_banned, updated_at, count(*) OVER ()
+  FROM people`+where+`
  ORDER BY lower(display_name), id
- LIMIT $6 OFFSET $7`, q, strings.TrimSpace(in.Status), scoped, in.DepartmentIDs, in.DepartmentID, in.Limit, in.Offset)
+ LIMIT $6 OFFSET $7`, append(args, in.Limit, in.Offset)...)
 	if err != nil {
 		return nil, httperror.Internal(err)
 	}
@@ -549,7 +551,7 @@ SELECT id, display_name, legal_name, COALESCE(nickname, ''), COALESCE(username, 
 		return nil, httperror.Internal(err)
 	}
 	if len(out.Items) == 0 && in.Offset > 0 {
-		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM people`).Scan(&out.Total); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM people`+where, args...).Scan(&out.Total); err != nil {
 			return nil, httperror.Internal(err)
 		}
 	}

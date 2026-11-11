@@ -446,10 +446,29 @@ UPDATE review_items SET status = $2, first_name = $3, last_name = $4, nickname =
 
 // UpdateInput lets a reviewer assign the department and access groups of
 // an open item, or add a note.
+// A field left out of the request keeps its value; department_id null
+// clears the department.
 type ReviewUpdateInput struct {
 	DepartmentID *uuid.UUID  `json:"department_id"`
 	BundleIDs    []uuid.UUID `json:"bundle_ids"`
 	Notes        *string     `json:"notes"`
+
+	hasDepartment, hasBundles bool
+}
+
+// UnmarshalJSON records which fields the request carried.
+func (in *ReviewUpdateInput) UnmarshalJSON(b []byte) error {
+	type plain ReviewUpdateInput
+	if err := json.Unmarshal(b, (*plain)(in)); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return err
+	}
+	_, in.hasDepartment = keys["department_id"]
+	_, in.hasBundles = keys["bundle_ids"]
+	return nil
 }
 
 // Update changes an open item's department, access groups or note.
@@ -460,6 +479,12 @@ func (s *ReviewService) Update(ctx context.Context, actor string, id uuid.UUID, 
 	}
 	if in.Notes != nil {
 		it.Data.Notes = strings.TrimSpace(*in.Notes)
+	}
+	if !in.hasDepartment {
+		in.DepartmentID = it.DepartmentID
+	}
+	if !in.hasBundles {
+		in.BundleIDs = it.BundleIDs
 	}
 	raw, _ := json.Marshal(it.Data)
 	bundles, _ := json.Marshal(uniqueIDs(in.BundleIDs))

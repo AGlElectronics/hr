@@ -68,6 +68,18 @@ func (w *WorkspaceService) directory(ctx context.Context) (provisioners.Workspac
 	return dir, st, err
 }
 
+// Active reports whether the connector is available and turned on.
+func (w *WorkspaceService) Active(ctx context.Context) (bool, error) {
+	if w == nil || w.open == nil {
+		return false, nil
+	}
+	st, err := w.settings.Get(ctx)
+	if err != nil {
+		return false, err
+	}
+	return st.Workspace.Enabled, nil
+}
+
 func (w *WorkspaceService) domain(st *Settings) string {
 	return firstNonEmpty(st.Workspace.Domain, st.OrgEmailDomain)
 }
