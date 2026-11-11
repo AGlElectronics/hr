@@ -20,6 +20,11 @@ import { KeycloakPage } from '@/pages/KeycloakPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { OnboardingAccessPage } from '@/pages/onboarding/OnboardingAccessPage';
 import { OnboardingReviewPage } from '@/pages/onboarding/OnboardingReviewPage';
+import { AccessGroupsPage } from '@/pages/AccessGroupsPage';
+import { AuditPage } from '@/pages/AuditPage';
+import { ImportPage } from '@/pages/ImportPage';
+import { RegisterPage } from '@/pages/RegisterPage';
+import { ReviewPage } from '@/pages/ReviewPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { OidcCallbackPage } from '@/pages/OidcCallbackPage';
 
@@ -165,10 +170,47 @@ const departmentsRoute = createRoute({
   component: DepartmentsPage,
 });
 
+const accessGroupsRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/access-groups',
+  component: AccessGroupsPage,
+});
+
+const reviewRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/review',
+  component: ReviewPage,
+});
+
+const importRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/import',
+  component: ImportPage,
+});
+
+const auditRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/audit',
+  component: AuditPage,
+});
+
+/** "Waiting for a coordinator": signed-in people without HR access register themselves. */
+const registerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/register',
+  beforeLoad: requireSession,
+  component: RegisterPage,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   oidcCallbackRoute,
+  registerRoute,
   appLayoutRoute.addChildren([
+    accessGroupsRoute,
+    reviewRoute,
+    importRoute,
+    auditRoute,
     indexRoute,
     dashboardRoute,
     peopleRoute,

@@ -3,9 +3,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Bug,
   Building2,
+  FileSpreadsheet,
+  Inbox,
   KeyRound,
   LayoutDashboard,
+  Layers,
   LogOut,
+  ScrollText,
   Settings,
   ShieldX,
   UserPlus,
@@ -13,7 +17,7 @@ import {
 } from 'lucide-react';
 
 import { isDenPairingRequired, useDenState } from '@/api/den';
-import { getMe } from '@/api/me';
+import { can, canGlobal, getMe, type Me, type Permission } from '@/api/me';
 import { isOidcAuthMode, signOutOidc } from '@/auth/oidc';
 import { DenConnection } from '@/components/DenConnection';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -22,18 +26,33 @@ import { useModuleBrand } from '@/lib/moduleBrand';
 import { useThemeSync } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 
-type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
+type NavItem = {
+  to: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  /** Shown only to callers with this permission (department-scoped is enough unless `global`). */
+  perm?: Permission;
+  global?: boolean;
+};
 
 const NAV: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/onboarding', label: 'Onboarding', icon: UserPlus },
+  { to: '/review', label: 'Review queue', icon: Inbox, perm: 'review.manage' },
   { to: '/people', label: 'People', icon: Users },
   { to: '/departments', label: 'Departments', icon: Building2 },
+  { to: '/access-groups', label: 'Access groups', icon: Layers },
+  { to: '/import', label: 'Import', icon: FileSpreadsheet, perm: 'import.run', global: true },
+  { to: '/audit', label: 'Audit log', icon: ScrollText, perm: 'audit.read', global: true },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
 /** Technical views for whoever runs the stack; tucked away from day-to-day HR work. */
-const DEBUG_NAV: NavItem[] = [{ to: '/keycloak', label: 'Keycloak groups', icon: KeyRound }];
+const DEBUG_NAV: NavItem[] = [{ to: '/keycloak', label: 'Keycloak groups', icon: KeyRound, perm: 'idp.groups.read', global: true }];
+
+function visible(items: NavItem[], me: Me | undefined) {
+  return items.filter((i) => !i.perm || (i.global ? canGlobal(me, i.perm) : can(me, i.perm)));
+}
 
 function Wordmark() {
   const brand = useModuleBrand('/api/brand', 'HR');
@@ -80,8 +99,9 @@ function NavLinks({ items }: { items: NavItem[] }) {
   );
 }
 
-function DebugSection() {
+function DebugSection({ me }: { me: Me | undefined }) {
   const on = useDebugMode();
+  const items = visible(DEBUG_NAV, me);
   return (
     <div>
       <button
@@ -98,9 +118,9 @@ function DebugSection() {
           <span className={cn('h-3 w-3 rounded-full bg-white shadow transition-transform', on && 'translate-x-3')} />
         </span>
       </button>
-      {on && (
+      {on && items.length > 0 && (
         <div className="ml-3 border-l border-border pl-2">
-          <NavLinks items={DEBUG_NAV} />
+          <NavLinks items={items} />
         </div>
       )}
     </div>
@@ -127,6 +147,10 @@ function NoAccess({ username }: { username: string }) {
           You are signed in as <span className="font-semibold text-foreground">{username}</span>, but your account is not
           allowed to use HR. Ask an HR admin to give you HR access.
         </p>
+        <p className="text-sm">
+          New volunteer?{' '}
+          <Link to="/register" className="font-semibold text-primary hover:underline">Send your details to a coordinator</Link>
+        </p>
         <div className="flex justify-center gap-3 text-sm">
           <SignOutButton />
         </div>
@@ -137,10 +161,21 @@ function NoAccess({ username }: { username: string }) {
 
 /**
  * Shown instead of the app while the backend runs with DEN_MODE=required and is not paired.
- * Everyone with HR access may manage the Den connection, so there is no waiting variant.
+ * Only HR admins may pair; everyone else waits.
  */
-function DenPairingGate() {
+function DenPairingGate({ me }: { me: Me | undefined }) {
   const qc = useQueryClient();
+  if (!canGlobal(me, 'den.manage')) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background p-6 text-foreground">
+        <div className="w-full max-w-md space-y-4 rounded-lg border border-border bg-card p-6 text-center">
+          <h1 className="text-xl font-bold">Waiting for Den</h1>
+          <p className="text-sm text-muted-foreground">HR is not connected to Den yet. Ask an HR admin to connect it.</p>
+          <SignOutButton />
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-6 text-foreground">
       <div className="w-full max-w-xl space-y-4 rounded-lg border border-border bg-card p-6">
@@ -174,7 +209,7 @@ export function Layout() {
     return <NoAccess username={me.data.username} />;
   }
   if (me.data && isDenPairingRequired(denState.data)) {
-    return <DenPairingGate />;
+    return <DenPairingGate me={me.data} />;
   }
 
   return (
@@ -184,10 +219,10 @@ export function Layout() {
           <Wordmark />
         </div>
         <nav className="p-2 md:flex-1 overflow-y-auto">
-          <NavLinks items={NAV} />
+          <NavLinks items={visible(NAV, me.data)} />
         </nav>
         <div className="p-2 border-t border-border space-y-0.5">
-          <DebugSection />
+          <DebugSection me={me.data} />
           <ThemeToggle className="w-full" />
         </div>
         <div className="p-3 border-t border-border text-xs text-muted-foreground">
