@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { calls, fakeApiRequest, renderWithQuery, routerMock, setRoutes } from '@/test/helpers';
 
-vi.mock('@/api/client', async (orig) => ({ ...(await orig<typeof import('@/api/client')>()), apiRequest: fakeApiRequest }));
+vi.mock('@/api/client', async (orig) => ({ ...(await orig<object>()), apiRequest: fakeApiRequest }));
 vi.mock('@tanstack/react-router', () => routerMock);
 
 const { OnboardingReviewPage } = await import('./OnboardingReviewPage');

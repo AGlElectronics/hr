@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { fakeApiRequest, me, renderWithQuery, setRoutes } from '@/test/helpers';
 
-vi.mock('@/api/client', async (orig) => ({ ...(await orig<typeof import('@/api/client')>()), apiRequest: fakeApiRequest }));
+vi.mock('@/api/client', async (orig) => ({ ...(await orig<object>()), apiRequest: fakeApiRequest }));
 
 const { AccessPicker } = await import('./AccessPicker');
 
