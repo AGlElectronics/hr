@@ -2,56 +2,65 @@
 
 ## Status
 
-Accepted (scaffold phase).
+Accepted. Updated for 1.0.0: the Keycloak connector is real, the fake
+workspace job is gone, and the Google Workspace connector logic is in HR
+against an interface whose real client comes from the shared Go package.
 
 ## Context
 
-The HR module has to talk to at least two external systems — an identity
-provider (Keycloak, planned) and a workspace / collaboration product
-(Google Workspace, planned). Those targets may change (we may end up on a
-different IdP; "workspace" could become multiple backends; we may add e.g.
-badge printing). Letting their SDKs leak into service code would couple HR
-to specific vendors forever.
+The HR module talks to an identity provider (Keycloak) and, optionally, to
+Google Workspace. Those targets may change (another IdP, an IdP HR does not
+own, more workspace products). Letting their SDKs leak into service code
+would couple HR to specific vendors.
 
 ## Decision
 
-Every external system the HR module speaks to is accessed through an
-**interface** declared in `internal/provisioners`. Service code only ever
-holds that interface, never a concrete vendor SDK type. Each interface has
-exactly two implementations in-tree:
+Every external system HR speaks to is accessed through an **interface** in
+`internal/provisioners`. Service code holds the interface, never a vendor
+type.
 
-1. A **real** implementation that talks to the vendor over the network. Not
-   written yet; added when we wire the real IdP / workspace.
-2. A **fake** implementation that runs in-process, is deterministic and
-   logs every call. This is what the scaffold ships (`FakeIdP`,
-   `FakeWorkspace`), and it is what tests use.
+- **Identity provider.** `IdPProvisioner` creates or links accounts and sets
+  groups; smaller interfaces (`AccountManager`, `Directory`, `UserScanner`,
+  `GroupEnsurer`, `PasswordSetupSender`, `UsernameDirectory`) add what only
+  some implementations offer, and services check for them with a type
+  assertion. The real implementation is `KeycloakIdP` (Admin API through a
+  service-account client). `IDP_PROVISIONER_MODE` chooses `manage` (HR owns
+  accounts), `link` (HR finds existing accounts and never creates or deletes
+  them) or `off` (no connector; HR keeps records only).
+- **Google Workspace.** `WorkspaceDirectory` (users create/suspend/delete/get,
+  groups and members). HR's logic (account per person, department groups,
+  suspend on offboarding, delayed delete with reminders) is written and
+  tested against `FakeWorkspace`. The real HTTP client is not part of HR; it
+  is plugged in from the shared Go package (`shared/go/gworkspace`) through a
+  `WorkspaceFactory`. Until then the connector reports itself unavailable.
+- **Fakes are for tests only.** `FakeIdP` and `FakeWorkspace` run in-process
+  and are deterministic. Outside `APP_ENV=development` HR refuses to start
+  rather than fall back to the fake identity provider, and it never records a
+  fake job as succeeded.
 
-Rules the services must follow:
+Rules the services follow:
 
-- Services depend on the interface, not on a struct type.
-- Services never import a vendor SDK directly.
-- Connector methods are idempotent on `HRPersonID` so retries are safe.
-- Connectors never read HR tables or write to the HR database. Side effects
-  of a provisioning run (job rows, state transitions) are persisted by the
-  calling service, not by the connector.
+- Services depend on interfaces, never on a struct type or vendor SDK.
+- Connector methods are idempotent (keyed on the HR person id or the email),
+  so background job retries are safe.
+- Connectors never read or write HR tables. Job rows, state transitions and
+  audit events are written by the calling service.
 
-Wiring happens exactly once, in `internal/app/app.go`, where `main` chooses
-which implementation to pass into the HTTP layer.
+Wiring happens once, in `internal/app/app.go`.
 
 ## Consequences
 
 **Positive**
 
-- Swapping Keycloak for another IdP is a one-file change plus a config
-  flip.
-- Tests do not need a running Keycloak / Google Workspace; the fakes are
-  fast and have no network.
-- The HR service code reads the same regardless of whether the fake or the
-  real connector is behind the interface.
+- Supporting another IdP or an existing convention IdP is a new
+  implementation plus configuration, not a change to the services.
+- Tests need no running Keycloak or Google Workspace; the Keycloak connector
+  itself is tested against an `httptest` fake of the Admin API.
 
 **Negative**
 
-- A thin indirection the first time a developer traces a call. Mitigated by
-  keeping the connector package tiny.
-- Fakes can drift from reality. We accept this risk for the scaffold and
-  will add contract tests when the real connectors land.
+- A thin indirection when tracing a call.
+- Fakes can drift from reality; the Keycloak connector's tests and the smoke
+  script against a real Keycloak (`scripts/smoke-hr-keycloak.ps1` in the root
+  repository) cover that for the IdP. The Workspace client gets its contract
+  tests in the shared package.

@@ -6,13 +6,14 @@
 > Con Services is under active development. Expect breaking changes, missing
 > features and bugs. Do not use it for real events or real data yet.
 
-HR provisioning module for the Awoostria service stack. Owns the people
-registry, employment drafts, approvals, and the outbound Keycloak / Google
-Workspace provisioning jobs. See `docs/` for the full architecture; this
-README is strictly about getting the stack running locally.
+HR is the people module of Con Services. It keeps the register of volunteers
+and staff, onboards them into departments, and gives or takes away their
+sign-in account and access in Keycloak. The full guide (setup, configuration,
+API, admin guide, personal data) is on the documentation site:
+[HR module](https://aglelectronics.github.io/con-services/modules/hr/). This
+README is about getting the stack running locally.
 
-- **Backend:** Go 1.27, chi, pgx (hand-written queries for now — `sqlc.yaml`
-  is wired for a later pass, see the note at the top of that file).
+- **Backend:** Go 1.27, chi, pgx with hand-written SQL.
 - **Frontend:** React 19 + Rsbuild + TanStack Query + Tailwind.
 - **Database:** PostgreSQL 16, migrated via Goose (`cmd/migrate` one-shot).
 - **Object storage:** HR stores **no files** in this phase, so no S3 server is
@@ -37,12 +38,27 @@ host-side port is reserved per-module (HR = 8110) and the Compose file maps
 colliding with `stash` (8080/3000/5432) and `rally` (8100/3002/5435) on the
 same dev machine.
 
-## Auth model (this phase)
+## Sign-in and HR roles
 
-HR has **no operator login**. The API is ungated locally; the only
-middleware is `devuser`, which stamps `X-Dev-User` (defaults to
-`dev-hr-admin`) on writes so audit rows carry an actor name. Real OIDC /
-Keycloak-based auth is deferred — see ADR-0003.
+Everyone signs in with OIDC (OpenID Connect) against the suite's Keycloak
+realm (`AUTH_MODE=oidc`). What someone may do in HR depends on their groups:
+
+| Group (default)   | HR role | What they can do |
+| ----------------- | ------- | ---------------- |
+| `hr-admin`        | admin   | Everything, including settings, access groups, imports, the audit log and assigning admin roles of other modules. |
+| `hr-viewer`       | viewer  | Read people, departments and onboardings; change nothing. |
+| `hr-lead`         | lead    | Read, onboard and change access only in the departments whose lead list includes them. |
+
+Change the group names with `HR_ADMIN_GROUPS`, `HR_VIEWER_GROUPS` and
+`HR_LEAD_GROUPS`. Nobody may change their own access, status or ban.
+Signed-in people without an HR role see "No access to HR" and can send their
+details to a coordinator (the review queue).
+
+For local work without Keycloak, `AUTH_MODE=dev` takes the user from the
+`X-Dev-User` header (default `dev-hr-admin`, an HR admin) and groups from
+`X-Dev-Groups`. Dev sign-in is for development only. See
+[Configuration](https://aglelectronics.github.io/con-services/modules/hr/configuration/)
+for every setting; `.env.example` lists them with development values.
 
 ## First-time boot
 
@@ -61,7 +77,7 @@ What happens:
 1. `postgres` boots and reports healthy.
 2. `migrate` (one-shot) applies all pending Goose migrations and exits 0.
 3. `backend` starts on container `:8080`, published on host `:8110`. It
-   does **not** auto-migrate (ADR-0003).
+   never migrates the database itself; that is the `migrate` job's work.
 4. `frontend` builds the SPA, serves it from nginx on `:3003`, and proxies
    `/api/...` + `/livez` + `/readyz` to the backend over `backend:8080`.
 
@@ -139,11 +155,10 @@ npm run dev                 # serves on :3003, proxies /api to :8110
 hr/
 ├── backend/
 │   ├── cmd/
-│   │   ├── migrate/      # one-shot Goose runner (ADR-0003)
+│   │   ├── migrate/      # one-shot Goose runner
 │   │   └── server/       # API; NEVER migrates
-│   ├── internal/         # app, config, http, service, repo, …
-│   ├── migrations/       # embedded via migrations/embed.go
-│   └── queries/          # sqlc queries (hand-rolled pgx today)
+│   ├── internal/         # app, config, http (handlers), service (logic), provisioners, …
+│   └── migrations/       # embedded via migrations/embed.go
 ├── docs/                 # ADRs + design docs
 ├── frontend/             # Rsbuild SPA
 └── infra/                # Docker Compose stack + Dockerfiles + nginx
