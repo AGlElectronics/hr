@@ -137,6 +137,16 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   platform's `conservices-internal-ca` issuer; without them set
   `internalTLS.enabled: false`. See
   [Set up HR](https://aglelectronics.github.io/con-services/modules/hr/setup/).
+  The chart's `config:` sets `HR_ADMIN_GROUPS`, `HR_VIEWER_GROUPS`,
+  `HR_LEAD_GROUPS` and `IDP_PROVISIONER_MODE`; role catalogs are discovered
+  from Den, so `ROLE_CATALOG_SOURCES` is only an optional override. The
+  backend may call every module namespace (`networkPolicy.moduleEgressNamespaces`)
+  and admits the wiki's backend (`networkPolicy.allowFromNamespaces:
+  [conservices-wiki]`) for the group directory. `existingSecret` may hold
+  `HR_DIRECTORY_TOKEN`. `googleWorkspace.enabled` (off by default) mounts
+  the service-account key from `googleWorkspace.existingSecret` and opens
+  egress to Google's APIs (`networkPolicy.googleApis`). See
+  [Google Workspace](https://aglelectronics.github.io/con-services/modules/hr/google-workspace/).
 - Development: `infra/docker-compose.yml` mounts
   `infra/frontend-config/compose.json` (dev sign-in) as the web app's
   `/config.json`; set `FRONTEND_CONFIG` in `.env` to use another file.
