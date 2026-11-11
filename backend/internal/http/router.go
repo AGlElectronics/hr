@@ -216,6 +216,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	reviewSvc := service.NewReviewService(deps.Pool, auditWriter, peopleSvc, onboardingSvc, draftSvc, provSvc, lifecycleSvc, scanner, accounts,
 		cfg.ProvisionerMode == config.ProvisionerLink, deps.Logger)
 	review := &reviewHandler{svc: reviewSvc, depts: deptSvc, chk: chk}
+	imports := &importHandler{svc: service.NewImportService(deps.Pool, auditWriter, settingsSvc)}
 	jobs.Handle(service.JobBundleSync, service.JobHandler{Run: func(ctx context.Context, j service.Job) error {
 		var p struct {
 			BundleID uuid.UUID `json:"bundle_id"`
@@ -376,6 +377,23 @@ func NewRouter(deps Deps, version string) http.Handler {
 				rr.Post("/{id}/accept", review.accept)
 				rr.Post("/{id}/merge", review.merge)
 				rr.Post("/{id}/reject", review.reject)
+			})
+
+			api.Route("/imports", func(ir chi.Router) {
+				ir.Use(global(authz.ImportRun))
+				ir.Get("/", imports.list)
+				ir.Post("/inspect", imports.inspect)
+				ir.Post("/preview", imports.preview)
+				ir.Post("/", imports.commit)
+				ir.Get("/{id}", imports.get)
+				ir.Get("/{id}/errors", imports.errors)
+				ir.Delete("/{id}", imports.undo)
+			})
+			api.Route("/import-templates", func(tr chi.Router) {
+				tr.Use(global(authz.ImportRun))
+				tr.Get("/", imports.templates)
+				tr.Post("/", imports.saveTemplate)
+				tr.Delete("/{id}", imports.deleteTemplate)
 			})
 
 			api.Route("/workspace", func(wr chi.Router) {
