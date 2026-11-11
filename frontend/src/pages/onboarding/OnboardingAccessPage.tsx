@@ -48,13 +48,14 @@ export function OnboardingAccessPage() {
       )}
       <AccessPicker
         plan={draft.roles}
+        bundleIds={draft.bundle_ids}
         editable={editable}
         defaults={department?.default_roles.map((r) => r.role_name)}
-        intro={<>Switch on the modules they need, then tick what they should be able to do.</>}
+        intro={<>Pick their access groups, then switch on any extra modules they need.</>}
         allowSaveWhenClean
         saveLabel="Save & continue to review"
-        onSave={async (roles) => {
-          if (editable) await assignRoles(id, { roles });
+        onSave={async (roles, bundleIds) => {
+          if (editable) await assignRoles(id, { roles, bundle_ids: bundleIds });
           await qc.invalidateQueries({ queryKey: ['onboarding', id] });
           await navigate({ to: '/onboarding/$id/review', params: { id } });
         }}

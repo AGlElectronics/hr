@@ -11,6 +11,8 @@ export type CatalogRole = {
   note?: string;
   /** Pre-selected for everyone (e.g. Den: Member); can be unticked. */
   default?: boolean;
+  /** Administration of a module: needs the "assign admin roles" permission. */
+  privileged?: boolean;
 };
 
 export type CatalogModule = {
@@ -19,8 +21,10 @@ export type CatalogModule = {
   description: string;
   roles: CatalogRole[];
   source: string;
-  status: 'ok' | 'error';
+  /** ok: live · cached: module offline, last known catalog · error: offline and never seen. */
+  status: 'ok' | 'cached' | 'error';
   error?: string;
+  fetched_at?: string;
 };
 
 export const getAccessCatalog = () =>
@@ -28,3 +32,7 @@ export const getAccessCatalog = () =>
 
 /** Draft role_name encoding: "<module>:<role key>". */
 export const roleRef = (module: string, key: string) => `${module}:${key}`;
+
+/** Admin-type roles: flagged privileged, or named admin / *-admin. */
+export const isAdminRole = (r: Pick<CatalogRole, 'key' | 'group' | 'privileged'>) =>
+  !!r.privileged || r.key === 'admin' || r.key.endsWith('-admin') || r.group.endsWith('-admin');

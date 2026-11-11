@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { Pencil } from 'lucide-react';
 
-import { listPeople, PERSON_STATUSES, type PersonStatus } from '@/api/people';
+import { listPeople, PAGE_SIZE, PERSON_STATUSES, type PersonStatus } from '@/api/people';
 import { PersonQuickPanel } from '@/components/PersonQuickPanel';
 import { PersonStatusBadge } from '@/components/PersonStatusBadge';
 import { SearchInput } from '@/components/SearchInput';
@@ -14,14 +14,16 @@ export function PeoplePage() {
   const setStatus = (s: string) =>
     void navigate({ to: '/people', search: s ? { status: s as PersonStatus } : {}, replace: true });
   const [q, setQ] = useState('');
+  const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState<string | null>(null);
 
   const peopleQuery = useQuery({
-    queryKey: ['people', q, status],
-    queryFn: () => listPeople({ q: q || undefined, status: status || undefined }),
+    queryKey: ['people', q, status, offset],
+    queryFn: () => listPeople({ q: q || undefined, status: status || undefined, limit: PAGE_SIZE, offset }),
     placeholderData: keepPreviousData,
   });
   const items = peopleQuery.data?.items ?? [];
+  const total = peopleQuery.data?.total ?? 0;
 
   return (
     <div className="p-6 space-y-6">
@@ -41,8 +43,8 @@ export function PeoplePage() {
       <section className="rounded-lg border border-border bg-card">
         <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
           <span className="font-semibold">{PERSON_STATUSES.find((s) => s.value === status)?.label ?? 'All'} people</span>
-          <SearchInput value={q} onChange={setQ} placeholder="Name, nickname or email…" className="ml-auto w-64" />
-          <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status"
+          <SearchInput value={q} onChange={(v) => { setQ(v); setOffset(0); }} placeholder="Name, nickname or email…" className="ml-auto w-64" />
+          <select value={status} onChange={(e) => { setOffset(0); setStatus(e.target.value); }} aria-label="Status"
             className="rounded-md border border-input bg-background px-3 py-1.5 text-sm">
             <option value="">All statuses</option>
             {PERSON_STATUSES.map((s) => (
@@ -56,7 +58,7 @@ export function PeoplePage() {
             <tr className="border-b border-border">
               <th className="px-4 py-2">Name</th>
               <th className="px-4 py-2">Email</th>
-              <th className="px-4 py-2 hidden md:table-cell">Phone</th>
+              <th className="px-4 py-2 hidden md:table-cell">Login name</th>
               <th className="px-4 py-2">Status</th>
               <th className="px-4 py-2" />
             </tr>
@@ -75,8 +77,11 @@ export function PeoplePage() {
                   <div>{p.email}</div>
                   {p.org_email && <div className="text-xs text-muted-foreground">{p.org_email}</div>}
                 </td>
-                <td className="px-4 py-2 hidden md:table-cell text-muted-foreground">{p.phone || '—'}</td>
-                <td className="px-4 py-2"><PersonStatusBadge status={p.status} /></td>
+                <td className="px-4 py-2 hidden md:table-cell text-muted-foreground">{p.username || '—'}</td>
+                <td className="px-4 py-2">
+                  <PersonStatusBadge status={p.status} />
+                  {p.is_banned && <span className="ml-1 rounded-pill bg-destructive/10 px-1.5 py-0.5 text-[11px] font-semibold text-destructive">Banned</span>}
+                </td>
                 <td className="px-4 py-2 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                   <Link to="/people/$id" params={{ id: p.id }} search={{ edit: true }}
                     className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
@@ -94,6 +99,19 @@ export function PeoplePage() {
             )}
           </tbody>
         </table>
+        {total > PAGE_SIZE && (
+          <footer className="flex items-center justify-between border-t border-border px-4 py-2 text-sm">
+            <span className="text-muted-foreground">
+              {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
+            </span>
+            <span className="flex gap-2">
+              <button type="button" disabled={offset === 0} onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+                className="rounded-pill border border-border px-3 py-1 disabled:opacity-50">Previous</button>
+              <button type="button" disabled={offset + PAGE_SIZE >= total} onClick={() => setOffset((o) => o + PAGE_SIZE)}
+                className="rounded-pill border border-border px-3 py-1 disabled:opacity-50">Next</button>
+            </span>
+          </footer>
+        )}
       </section>
       {open && <PersonQuickPanel personId={open} onClose={() => setOpen(null)} />}
     </div>

@@ -1,4 +1,4 @@
-import { apiRequest } from './client';
+import { apiRequest, type Page } from './client';
 
 export type PersonStatus = 'applicant' | 'onboarding' | 'active' | 'paused';
 
@@ -60,6 +60,10 @@ export type Person = {
   emergency_contact: EmergencyContact;
   status: PersonStatus;
   notes?: string;
+  /** Account id in the identity provider, and the OIDC subject modules know them by. */
+  idp_user_id?: string;
+  idp_subject?: string;
+  paused_at?: string;
   created_at: string;
   updated_at: string;
   /** Set on update when the profile saved but the account could not be updated. */
@@ -84,8 +88,16 @@ export type PersonInput = {
   notes?: string;
 };
 
-export const listPeople = (filter?: { q?: string; status?: string }) =>
-  apiRequest<{ items: Person[] }>('/api/people', { query: filter });
+/** The reduced shape of the people list (no date of birth, phone, address or emergency contact). */
+export type PersonSummary = Pick<
+  Person,
+  'id' | 'display_name' | 'legal_name' | 'nickname' | 'username' | 'email' | 'org_email' | 'status' | 'is_banned' | 'updated_at'
+>;
+
+export const PAGE_SIZE = 50;
+
+export const listPeople = (filter?: { q?: string; status?: string; department_id?: string; limit?: number; offset?: number }) =>
+  apiRequest<Page<PersonSummary>>('/api/people', { query: filter });
 
 export const getPerson = (id: string) => apiRequest<Person>(`/api/people/${id}`);
 
@@ -107,5 +119,6 @@ export const checkUsername = (q: { first: string; last: string; nickname: string
 
 export type AddressHit = Address & { label: string };
 
+/** provider is the server addresses are sent to (shown in the privacy notice). */
 export const searchAddress = (q: string) =>
-  apiRequest<{ enabled: boolean; items: AddressHit[]; throttled?: boolean }>('/api/address/search', { query: { q } });
+  apiRequest<{ enabled: boolean; items: AddressHit[]; throttled?: boolean; provider?: string }>('/api/address/search', { query: { q } });

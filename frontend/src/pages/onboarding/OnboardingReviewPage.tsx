@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useParams } from '@tanstack/react-router';
-import { AlertTriangle, CheckCircle2, GraduationCap, Mail, Pencil } from 'lucide-react';
+import { Link, useNavigate, useParams } from '@tanstack/react-router';
+import { AlertTriangle, CheckCircle2, GraduationCap, Loader2, Mail, Pencil, XCircle } from 'lucide-react';
 
-import { completeOnboarding, getOnboarding, type CompleteResult } from '@/api/onboarding';
+import { resendPasswordSetup } from '@/api/lifecycle';
+import { cancelOnboarding, completeOnboarding, getOnboarding, type CompleteResult, type ProvisioningStatus } from '@/api/onboarding';
 import { addressLine, SOCIAL_NETWORKS } from '@/api/people';
 import { waitingText, type PendingGrant } from '@/api/roleGate';
 import { OnboardingSteps } from '@/components/OnboardingSteps';
@@ -27,33 +28,49 @@ const FIELD_LABELS: Record<string, string> = {
   'emergency_contact.phone': 'Emergency contact phone',
 };
 
-/** Step 3: verify everything, then complete (account, access, set-password email). */
+/**
+ * Step 3: verify everything, then complete. Completing queues a background
+ * job (account, access, set-password email); the page follows it.
+ */
 export function OnboardingReviewPage() {
   const { id } = useParams({ from: '/app/onboarding/$id/review' });
   const qc = useQueryClient();
-  const view = useQuery({ queryKey: ['onboarding', id], queryFn: () => getOnboarding(id) });
+  const navigate = useNavigate();
+  const view = useQuery({
+    queryKey: ['onboarding', id],
+    queryFn: () => getOnboarding(id),
+    refetchInterval: (q) => (q.state.data?.draft.state === 'provisioning' ? 1500 : false),
+  });
   const roles = useRoleLabels();
   const debug = useDebugMode();
-  const [result, setResult] = useState<CompleteResult | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
   const emailCheck = useEmailCheck(view.data?.person.email ?? '');
+  const refresh = () => {
+    for (const key of [['onboarding', id], ['people'], ['drafts'], ['dashboard'], ['pending-grants']]) void qc.invalidateQueries({ queryKey: key });
+  };
 
-  const complete = useMutation({
-    mutationFn: () => completeOnboarding(id),
-    onSuccess: (res) => {
-      setResult(res);
-      void qc.invalidateQueries({ queryKey: ['onboarding', id] });
-      void qc.invalidateQueries({ queryKey: ['people'] });
-      void qc.invalidateQueries({ queryKey: ['drafts'] });
-      void qc.invalidateQueries({ queryKey: ['dashboard'] });
-      void qc.invalidateQueries({ queryKey: ['pending-grants'] });
+  const complete = useMutation({ mutationFn: () => completeOnboarding(id), onSuccess: refresh });
+  const cancel = useMutation({
+    mutationFn: () => cancelOnboarding(id, cancelReason),
+    onSuccess: () => {
+      refresh();
+      void navigate({ to: '/onboarding' });
     },
   });
 
   if (view.isLoading) return <p className="p-6 text-muted-foreground">Loading…</p>;
   if (view.error || !view.data) return <p className="p-6 text-destructive">{(view.error as Error)?.message}</p>;
-  const { draft, person: p, department, missing_fields } = view.data;
+  const { draft, person: p, department, missing_fields, provisioning } = view.data;
   const done = draft.state === 'active';
+  const working = draft.state === 'provisioning';
+  const result: CompleteResult | null =
+    provisioning?.status === 'succeeded' && provisioning.result
+      ? provisioning.result
+      : provisioning?.status === 'failed' && draft.state === 'draft'
+        ? { ok: false, error: provisioning.error, jobs: [], groups_applied: null, account_created: false, password_setup_email_sent: false }
+        : null;
   const missing = Object.keys(missing_fields ?? {});
   const ec = p.emergency_contact ?? {};
   const socials = SOCIAL_NETWORKS.filter((n) => p.social_handles?.[n.key]);
@@ -75,9 +92,10 @@ export function OnboardingReviewPage() {
           {done ? `${p.display_name} has an account and is active.` : 'Check everything below. Nothing is created until you press Complete.'}
         </p>
       </div>
-      <OnboardingSteps current="review" id={id} locked={done} />
+      <OnboardingSteps current="review" id={id} locked={done || working} />
 
-      {result && <CompleteOutcome result={result} email={p.email} debug={debug} />}
+      {working && <Working status={provisioning} />}
+      {result && !working && <CompleteOutcome result={result} email={p.email} personId={p.id} debug={debug} />}
       {done && !result && (view.data.pending_grants?.length ?? 0) > 0 && (
         <WaitingList grants={view.data.pending_grants!} label={roles.text} />
       )}
@@ -128,7 +146,7 @@ export function OnboardingReviewPage() {
         {debug && groups.length > 0 && <Row label="Groups" value={groups.join(', ')} mono />}
       </Card>
 
-      {!done && (
+      {!done && !working && (
         <section className="rounded-lg border border-border bg-card p-4 space-y-3">
           <h2 className="font-semibold">When you press Complete</h2>
           <ol className="list-decimal space-y-1 pl-5 text-sm">
@@ -146,14 +164,34 @@ export function OnboardingReviewPage() {
             <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
             I checked the details above.
           </label>
-          <button
-            onClick={() => complete.mutate()}
-            disabled={!confirmed || missing.length > 0 || !department || complete.isPending}
-            className="rounded-pill bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60"
-          >
-            {complete.isPending ? 'Creating account…' : 'Complete onboarding'}
-          </button>
-          {complete.error && <p className="text-sm text-destructive">{(complete.error as Error).message}</p>}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => complete.mutate()}
+              disabled={!confirmed || missing.length > 0 || !department || complete.isPending}
+              className="rounded-pill bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60"
+            >
+              {complete.isPending ? 'Starting…' : 'Complete onboarding'}
+            </button>
+            <button type="button" onClick={() => setCancelling((c) => !c)}
+              className="inline-flex items-center gap-1 rounded-pill border border-border px-4 py-2 text-sm hover:bg-muted">
+              <XCircle className="h-4 w-4" /> Cancel onboarding
+            </button>
+          </div>
+          {complete.error && <p role="alert" className="text-sm text-destructive">{(complete.error as Error).message}</p>}
+          {cancelling && (
+            <form className="space-y-2 rounded-md border border-border p-3 text-sm" onSubmit={(e) => { e.preventDefault(); cancel.mutate(); }}>
+              <label className="block">
+                <span className="mb-1 block font-medium">Why is this onboarding cancelled? (optional)</span>
+                <input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2" />
+              </label>
+              <p className="text-xs text-muted-foreground">Nothing was created yet. {p.display_name} stays in HR as an applicant unless they have another department.</p>
+              {cancel.error && <p className="text-destructive">{(cancel.error as Error).message}</p>}
+              <button type="submit" disabled={cancel.isPending} className="rounded-pill bg-destructive px-4 py-1.5 font-semibold text-destructive-foreground">
+                Cancel onboarding
+              </button>
+            </form>
+          )}
         </section>
       )}
     </div>
@@ -178,9 +216,24 @@ function WaitingList({ grants, label }: { grants: PendingGrant[]; label: (ref: s
   );
 }
 
-function CompleteOutcome({ result, email, debug }: { result: CompleteResult; email: string; debug: boolean }) {
+function Working({ status }: { status?: ProvisioningStatus }) {
+  return (
+    <div role="status" className="rounded-md border border-info/30 bg-info-soft p-3 text-sm text-info-foreground">
+      <p className="flex items-center gap-2 font-semibold">
+        <Loader2 className="h-4 w-4 animate-spin" /> Setting up their account…
+      </p>
+      {status && status.attempts > 1 && (
+        <p className="mt-1">Attempt {status.attempts} of {status.max_attempts}{status.error ? `; the last attempt failed: ${status.error}` : ''}.</p>
+      )}
+      <p className="mt-1 text-xs">This runs in the background; you can leave this page.</p>
+    </div>
+  );
+}
+
+function CompleteOutcome({ result, email, personId, debug }: { result: CompleteResult; email: string; personId: string; debug: boolean }) {
   const [details, setDetails] = useState(false);
   const roles = useRoleLabels();
+  const resend = useMutation({ mutationFn: () => resendPasswordSetup(personId) });
   if (!result.ok) {
     return (
       <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
@@ -211,16 +264,29 @@ function CompleteOutcome({ result, email, debug }: { result: CompleteResult; ema
           <p className="flex items-center gap-2">
             <Mail className="h-4 w-4" /> Email with the set-password link sent to <strong>{email}</strong>.
           </p>
-        ) : result.temporary_password ? (
-          <p>
-            The email could not be sent{result.password_setup_error ? ` (${result.password_setup_error})` : ''}. Give them
-            this one-time password instead (they must change it on first sign-in):{' '}
-            <code className="rounded bg-background px-1.5 py-0.5 font-mono">{result.temporary_password}</code>
-          </p>
+        ) : result.password_setup_error ? (
+          <div className="space-y-1">
+            <p>
+              The set-password email could not be sent{debug ? ` (${result.password_setup_error})` : ''}. The sign-in server needs
+              working email (SMTP). Once that is fixed, send it again:
+            </p>
+            <button type="button" onClick={() => resend.mutate()} disabled={resend.isPending || resend.isSuccess}
+              className="rounded-pill border border-border bg-background px-3 py-1 text-xs font-semibold">
+              {resend.isSuccess ? 'Email sent' : resend.isPending ? 'Sending…' : 'Resend set-password email'}
+            </button>
+            {resend.error && <p className="text-destructive">{(resend.error as Error).message}</p>}
+          </div>
+        ) : result.account_created ? (
+          <p>No set-password email is sent on this installation: they sign in through the convention&apos;s SSO.</p>
         ) : (
           <p>They already had an account, so no password email was needed.</p>
         )}
       </div>
+      {(result.warnings?.length ?? 0) > 0 && (
+        <div className="rounded-md border border-warning/40 bg-warning-soft p-3 text-sm text-warning-foreground">
+          {result.warnings!.map((w) => <p key={w}>{w}</p>)}
+        </div>
+      )}
       {(result.pending_grants?.length ?? 0) > 0 && <WaitingList grants={result.pending_grants!} label={roles.text} />}
     </>
   );

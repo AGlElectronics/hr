@@ -7,6 +7,9 @@ const apiBaseUrl = () =>
   (typeof process !== 'undefined' ? process.env.HR_API_BASE_URL : undefined) ??
   runtimeConfig().apiBaseUrl;
 
+/** One page of a paged list. */
+export type Page<T> = { items: T[]; total: number; limit: number; offset: number };
+
 export type ApiErrorBody = {
   error: {
     code: string;
@@ -50,7 +53,7 @@ type RequestOpts = {
   headers?: Record<string, string>;
 };
 
-export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promise<T> {
+async function send(path: string, opts: RequestOpts, accept: string): Promise<Response> {
   const url = new URL(
     path.startsWith('http') ? path : `${apiBaseUrl()}${path}`,
     window.location.origin,
@@ -62,10 +65,11 @@ export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promi
     }
   }
 
+  const form = typeof FormData !== 'undefined' && opts.body instanceof FormData;
   const auth = await authHeadersResolver();
   const headers: Record<string, string> = {
-    Accept: 'application/json',
-    ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+    Accept: accept,
+    ...(opts.body !== undefined && !form ? { 'Content-Type': 'application/json' } : {}),
     ...auth,
     ...(opts.headers ?? {}),
   };
@@ -74,7 +78,7 @@ export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promi
   try {
     res = await fetch(url.toString(), {
       method: opts.method ?? 'GET',
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      body: form ? (opts.body as FormData) : opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
       signal: opts.signal,
       headers,
       credentials: 'include',
@@ -85,10 +89,40 @@ export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promi
       error: { code: 'network', message: 'Cannot reach the HR server. Check your connection or that the stack is running.' },
     });
   }
-
   if (res.status === 401) {
     unauthorizedHandler?.();
   }
+  return res;
+}
+
+/** Downloads a file (e.g. an import error report) and returns it as a Blob. */
+export async function apiBlob(path: string, opts: RequestOpts = {}): Promise<Blob> {
+  const res = await send(path, opts, '*/*');
+  if (!res.ok) {
+    const text = await res.text();
+    let body: Partial<ApiErrorBody> | null = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+    throw new ApiError(res.status, body?.error?.message ? (body as ApiErrorBody) : { error: { code: 'http_error', message: `Request failed (${res.status})` } });
+  }
+  return res.blob();
+}
+
+/** Saves a Blob as a file in the browser. */
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promise<T> {
+  const res = await send(path, opts, 'application/json');
   if (res.status === 204) {
     return undefined as T;
   }

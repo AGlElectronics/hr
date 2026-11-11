@@ -4,9 +4,8 @@ import { Link, useNavigate } from '@tanstack/react-router';
 import { AlertTriangle, ArrowRight, Search, UserPlus, X } from 'lucide-react';
 
 import { getDashboard, type AttentionItem, type AttentionKind, type DepartmentSummary } from '@/api/dashboard';
-import { listDepartments } from '@/api/departments';
 import { listDrafts } from '@/api/drafts';
-import { listPeople, PERSON_STATUSES, type Person } from '@/api/people';
+import { listPeople, PERSON_STATUSES, type PersonSummary } from '@/api/people';
 import { PersonQuickPanel } from '@/components/PersonQuickPanel';
 import { PersonStatusBadge } from '@/components/PersonStatusBadge';
 import { SearchInput } from '@/components/SearchInput';
@@ -122,7 +121,7 @@ function QuickStart({ departments }: { departments: DepartmentSummary[] }) {
 }
 
 /** Bottom pop-up shown while the quick start matches someone HR already has. */
-function KnownToHR({ people, term, department }: { people: Person[]; term: string; department: string }) {
+function KnownToHR({ people, term, department }: { people: PersonSummary[]; term: string; department: string }) {
   const [dismissed, setDismissed] = useState('');
   useEffect(() => {
     if (people.length === 0) setDismissed('');
@@ -282,29 +281,22 @@ function AttentionRow({ it, onOpen }: { it: AttentionItem; onOpen: (id: string) 
 }
 
 function InProgress() {
-  const drafts = useQuery({ queryKey: ['drafts'], queryFn: () => listDrafts() });
-  const people = useQuery({ queryKey: ['people'], queryFn: () => listPeople() });
-  const departments = useQuery({ queryKey: ['departments'], queryFn: listDepartments });
+  const drafts = useQuery({ queryKey: ['drafts', 'draft', 'dashboard'], queryFn: () => listDrafts({ state: 'draft', limit: 8 }) });
   const roles = useRoleLabels();
-  const byId = new Map((people.data?.items ?? []).map((p) => [p.id, p]));
-  const deptName = new Map((departments.data?.items ?? []).map((d) => [d.id, d.name]));
-  const items = (drafts.data?.items ?? []).filter((d) => d.state === 'draft' && d.department_id).slice(0, 8);
+  const items = (drafts.data?.items ?? []).filter((d) => d.department_id);
 
   return (
     <Panel title="Onboardings in progress" icon={<UserPlus className="h-4 w-4 text-primary" />} action={<ViewAll to="/onboarding" />}>
       {items.length === 0 && <p className="text-sm text-muted-foreground">None in progress.</p>}
       <ul className="divide-y divide-border">
         {items.map((d) => {
-          const p = byId.get(d.person_id);
-          const name = p ? `${p.first_name} ${p.last_name}`.trim() || p.email || 'Unnamed draft' : 'Unnamed draft';
           const access = roles.grouped((d.roles ?? []).map((r) => r.role_name));
           return (
             <li key={d.id} className="flex items-center justify-between gap-3 py-2 text-sm">
               <span className="min-w-0">
-                <span className="font-medium">{name}</span>
-                {p?.nickname && <span className="text-muted-foreground"> “{p.nickname}”</span>}
+                <span className="font-medium">{d.person_name || 'Unnamed draft'}</span>
                 <span className="block truncate text-xs text-muted-foreground">
-                  {[deptName.get(d.department_id!), access].filter(Boolean).join(' · ')}
+                  {[d.department_name, access].filter(Boolean).join(' · ')}
                 </span>
               </span>
               <Link to={(d.roles?.length ?? 0) > 0 ? '/onboarding/$id/review' : '/onboarding/$id/access'} params={{ id: d.id }}
