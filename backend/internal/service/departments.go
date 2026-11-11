@@ -44,6 +44,7 @@ type DepartmentService struct {
 // their groups.
 type RoleValidator interface {
 	ValidateRoles(ctx context.Context, roles []RolePlanInput, keep []domain.RolePlan) ([]RolePlanInput, error)
+	ValidateDefaults(ctx context.Context, roles []RolePlanInput) ([]RolePlanInput, error)
 }
 
 // SetHooks registers the modules told when a department is created, changed

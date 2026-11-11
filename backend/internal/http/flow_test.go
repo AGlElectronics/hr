@@ -397,8 +397,20 @@ func newTestRouter(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config.Con
 	}
 	t.Cleanup(pool.Close)
 
+	// The stash role catalog every test can assign from.
+	catalogSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"module":"stash","display_name":"Stash","roles":[
+			{"key":"volunteer","group":"stash-volunteer","assignable":true},
+			{"key":"lead","group":"stash-lead","assignable":true},
+			{"key":"scanner","group":"stash-scanner","assignable":true},
+			{"key":"admin","group":"stash-admin","assignable":true,"privileged":true},
+			{"key":"system","group":"stash-system","assignable":false}]}`))
+	}))
+	t.Cleanup(catalogSrv.Close)
+
 	cfg := &config.Config{
-		AppEnv:         "development",
+		AppEnv:             "development",
+		RoleCatalogSources: "stash=" + catalogSrv.URL,
 		AppBaseURL:     "http://localhost:8110",
 		HTTPAddr:       ":0",
 		AuthMode:       config.AuthModeDev,

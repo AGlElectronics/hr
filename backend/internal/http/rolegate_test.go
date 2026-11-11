@@ -82,7 +82,10 @@ func TestRoleGating(t *testing.T) {
 	}
 
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	gatedRole, gatedGroup := "stash:lead"+suffix, "stash-lead-"+suffix
+	// Roles must be in the (fake) stash catalog; requirements are removed
+	// again after the test.
+	gatedRole, gatedGroup := "stash:scanner", "stash-scanner"
+	_, _ = pool.Exec(ctx, `DELETE FROM role_requirements WHERE role_key = $1`, gatedRole)
 	rec = do(http.MethodPost, "/api/role-requirements", map[string]any{"role_key": gatedRole, "qualification_key": "first-aid", "revoke_on_expiry": true})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create requirement %d %s", rec.Code, rec.Body.String())

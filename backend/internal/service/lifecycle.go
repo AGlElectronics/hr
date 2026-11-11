@@ -35,6 +35,34 @@ type LifecycleService struct {
 	audit    *audit.Writer
 	gate     *RoleGateService // nil = no training requirements
 	hooks    []OffboardHook   // modules told after an offboarding
+	// bundles and validator plan access against access groups and catalogs
+	// (nil: roles are taken as given).
+	bundles   *BundleService
+	validator *AccessValidator
+}
+
+// SetAccessPlanning checks access changes against the catalogs and expands
+// access groups.
+func (s *LifecycleService) SetAccessPlanning(b *BundleService, v *AccessValidator) {
+	s.bundles, s.validator = b, v
+}
+
+func (s *LifecycleService) planAccess(ctx context.Context, roles []RolePlanInput, bundleIDs []uuid.UUID, keep []domain.RolePlan, trusted bool) ([]RolePlanInput, []uuid.UUID, error) {
+	if s.bundles != nil {
+		return s.bundles.Plan(ctx, roles, bundleIDs, keep, trusted)
+	}
+	out := make([]RolePlanInput, 0, len(roles))
+	for _, r := range roles {
+		r.RoleName, r.GroupName, r.Scope = strings.TrimSpace(r.RoleName), strings.TrimSpace(r.GroupName), strings.TrimSpace(r.Scope)
+		if r.RoleName == "" {
+			return nil, nil, httperror.Validation("each role requires role_name", nil)
+		}
+		if r.Scope == "" {
+			r.Scope = "global"
+		}
+		out = append(out, r)
+	}
+	return out, uniqueIDs(bundleIDs), nil
 }
 
 // SetRoleGate holds newly added roles back until their training is done.
@@ -170,12 +198,16 @@ type Membership struct {
 	DraftID    uuid.UUID          `json:"draft_id"`
 	Department *domain.Department `json:"department,omitempty"`
 	Roles      []domain.RolePlan  `json:"roles"`
+	BundleIDs  []uuid.UUID        `json:"bundle_ids"`
 }
 
-// ChangeAccessInput replaces the roles of one membership.
+// ChangeAccessInput replaces the roles of one membership. Roles are the
+// individually picked roles; BundleIDs (when sent) replace the membership's
+// access groups, otherwise they stay.
 type ChangeAccessInput struct {
-	DraftID uuid.UUID       `json:"draft_id"`
-	Roles   []RolePlanInput `json:"roles"`
+	DraftID   uuid.UUID       `json:"draft_id"`
+	Roles     []RolePlanInput `json:"roles"`
+	BundleIDs *[]uuid.UUID    `json:"bundle_ids,omitempty"`
 }
 
 // OffboardInput explains why someone leaves.
@@ -272,10 +304,11 @@ func (s *LifecycleService) Access(ctx context.Context, personID uuid.UUID) (*Per
 		if d.State != domain.DraftStateActive {
 			continue
 		}
-		m := Membership{DraftID: d.ID, Roles: d.Roles}
+		m := Membership{DraftID: d.ID, Roles: d.Roles, BundleIDs: d.BundleIDs}
 		if m.Roles == nil {
 			m.Roles = []domain.RolePlan{}
 		}
+		s.validator.Annotate(ctx, m.Roles)
 		if d.DepartmentID != nil {
 			if m.Department, err = s.depts.Get(ctx, *d.DepartmentID); err != nil {
 				return nil, err
@@ -320,22 +353,55 @@ func (s *LifecycleService) ChangeAccess(ctx context.Context, actor string, perso
 	if target == nil {
 		return nil, httperror.Validation("pick which membership to change", map[string]string{"draft_id": "required"})
 	}
+	bundleIDs := target.BundleIDs
+	if in.BundleIDs != nil {
+		bundleIDs = *in.BundleIDs
+	}
+	return s.applyAccess(ctx, actor, acc, target, in.Roles, bundleIDs, false, "person.access.change")
+}
 
+// ResyncBundle re-applies the access groups of one membership or onboarding
+// after an admin edited a bundle (background job "bundle.sync").
+func (s *LifecycleService) ResyncBundle(ctx context.Context, actor string, draftID, bundleID uuid.UUID) error {
+	d, err := s.drafts.Get(ctx, draftID)
+	if err != nil {
+		return err
+	}
+	switch d.State {
+	case domain.DraftStateDraft:
+		_, err := s.drafts.AssignDefaults(ctx, actor, draftID, AssignRolesInput{Roles: individualRoles(d.Roles), BundleIDs: d.BundleIDs})
+		return err
+	case domain.DraftStateActive:
+		acc, err := s.Access(ctx, d.PersonID)
+		if err != nil {
+			return err
+		}
+		for i := range acc.Memberships {
+			if acc.Memberships[i].DraftID == draftID {
+				_, err := s.applyAccess(ctx, actor, acc, &acc.Memberships[i], individualRoles(d.Roles), d.BundleIDs, true,
+					"bundle.sync")
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// applyAccess replaces a membership's roles and access groups and syncs the
+// IdP groups (adds new ones, removes ones no other membership still needs).
+// trusted skips the "assign admin roles" check (bundle syncs).
+func (s *LifecycleService) applyAccess(ctx context.Context, actor string, acc *PersonAccess, target *Membership, roles []RolePlanInput, bundleIDs []uuid.UUID, trusted bool, action string) (*PersonAccess, error) {
+	personID := acc.Person.ID
+	newRoles, bundleIDs, err := s.planAccess(ctx, roles, bundleIDs, target.Roles, trusted)
+	if err != nil {
+		return nil, err
+	}
 	hadRole := map[string]bool{}
 	for _, r := range target.Roles {
 		hadRole[r.RoleName] = true
 	}
-	newRoles := make([]RolePlanInput, 0, len(in.Roles))
 	added := []domain.RolePlan{}
-	for _, r := range in.Roles {
-		r.RoleName, r.GroupName, r.Scope = strings.TrimSpace(r.RoleName), strings.TrimSpace(r.GroupName), strings.TrimSpace(r.Scope)
-		if r.RoleName == "" {
-			return nil, httperror.Validation("each role requires role_name", nil)
-		}
-		if r.Scope == "" {
-			r.Scope = "global"
-		}
-		newRoles = append(newRoles, r)
+	for _, r := range newRoles {
 		if !hadRole[r.RoleName] {
 			added = append(added, domain.RolePlan{RoleName: r.RoleName, GroupName: r.GroupName, Scope: r.Scope})
 		}
@@ -398,18 +464,7 @@ func (s *LifecycleService) ChangeAccess(ctx context.Context, actor string, perso
 		}
 	}
 	if err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM role_plans WHERE draft_id = $1`, target.DraftID); err != nil {
-			return httperror.Internal(err)
-		}
-		for _, r := range newRoles {
-			if _, err := tx.Exec(ctx, `
-INSERT INTO role_plans (id, draft_id, role_name, group_name, scope) VALUES ($1, $2, $3, NULLIF($4, ''), $5)`,
-				uuid.New(), target.DraftID, r.RoleName, r.GroupName, r.Scope); err != nil {
-				return httperror.Internal(err)
-			}
-		}
-		_, err := tx.Exec(ctx, `UPDATE employment_drafts SET updated_at = now() WHERE id = $1`, target.DraftID)
-		return err
+		return writePlans(ctx, tx, target.DraftID, newRoles, bundleIDs)
 	}); err != nil {
 		return nil, err
 	}
@@ -425,8 +480,9 @@ INSERT INTO role_plans (id, draft_id, role_name, group_name, scope) VALUES ($1, 
 	for _, r := range pendingNew {
 		pendingKeys = append(pendingKeys, r.RoleName)
 	}
-	if err := s.audit.Record(ctx, actor, "person.access.change", "person", personID, map[string]any{
+	if err := s.audit.Record(ctx, actor, action, "person", personID, map[string]any{
 		"draft_id": target.DraftID, "added_groups": newGroups, "removed_groups": remove, "pending_roles": pendingKeys,
+		"bundles": bundleIDs,
 	}); err != nil {
 		return nil, err
 	}

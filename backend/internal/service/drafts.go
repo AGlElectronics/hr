@@ -20,9 +20,13 @@ import (
 // provisioning jobs are separate services; they just read drafts and
 // invoke transitions here.
 type DraftService struct {
-	pool  *pgxpool.Pool
-	audit *audit.Writer
+	pool    *pgxpool.Pool
+	audit   *audit.Writer
+	bundles *BundleService // plans roles and access groups; nil: no checks
 }
+
+// SetBundles plans role assignments through the catalogs and access groups.
+func (s *DraftService) SetBundles(b *BundleService) { s.bundles = b }
 
 // NewDraftService wires a DraftService.
 func NewDraftService(pool *pgxpool.Pool, aud *audit.Writer) *DraftService {
@@ -39,17 +43,21 @@ type CreateDraftInput struct {
 	Notes        string     `json:"notes,omitempty"`
 }
 
-// AssignRolesInput assigns a flat list of role plans to a draft, replacing
-// any previously assigned plans for that draft.
+// AssignRolesInput sets the access of a draft: individually picked roles
+// plus access groups, replacing what was assigned before.
 type AssignRolesInput struct {
-	Roles []RolePlanInput `json:"roles"`
+	Roles     []RolePlanInput `json:"roles"`
+	BundleIDs []uuid.UUID     `json:"bundle_ids,omitempty"`
 }
 
-// RolePlanInput is one requested role on a draft.
+// RolePlanInput is one requested role on a draft. GroupName is ignored on
+// input: HR always uses the group from the module's catalog.
 type RolePlanInput struct {
 	RoleName  string `json:"role_name"`
 	GroupName string `json:"group_name,omitempty"`
 	Scope     string `json:"scope,omitempty"`
+	// bundle is the access group the role comes from (nil: individual).
+	bundle *uuid.UUID
 }
 
 // Create inserts a new draft in state "draft".
@@ -159,7 +167,20 @@ FROM employment_drafts WHERE id = $1
 		return nil, err
 	}
 	d.Roles = roles
-	return d, nil
+	rows, err := s.pool.Query(ctx, `SELECT bundle_id FROM draft_bundles WHERE draft_id = $1 ORDER BY bundle_id`, id)
+	if err != nil {
+		return nil, httperror.Internal(err)
+	}
+	defer rows.Close()
+	d.BundleIDs = []uuid.UUID{}
+	for rows.Next() {
+		var b uuid.UUID
+		if err := rows.Scan(&b); err != nil {
+			return nil, httperror.Internal(err)
+		}
+		d.BundleIDs = append(d.BundleIDs, b)
+	}
+	return d, rows.Err()
 }
 
 // ListDraftsInput filters and pages the onboarding list.
@@ -215,7 +236,17 @@ SELECT d.id, d.person_id, d.department_id, d.title, d.start_date, d.end_date, d.
 // the "draft" state — once provisioning starts, role plans are frozen so
 // the audit trail matches what was actually pushed to the IdP.
 func (s *DraftService) AssignRoles(ctx context.Context, actor string, draftID uuid.UUID, in AssignRolesInput) ([]domain.RolePlan, error) {
-	// Normalize + validate up front.
+	return s.assign(ctx, actor, draftID, in, false)
+}
+
+// AssignDefaults sets the access an HR admin configured as defaults
+// (department and suite defaults); admin roles among them need no
+// "assign admin roles" permission from the caller.
+func (s *DraftService) AssignDefaults(ctx context.Context, actor string, draftID uuid.UUID, in AssignRolesInput) ([]domain.RolePlan, error) {
+	return s.assign(ctx, actor, draftID, in, true)
+}
+
+func (s *DraftService) assign(ctx context.Context, actor string, draftID uuid.UUID, in AssignRolesInput, trusted bool) ([]domain.RolePlan, error) {
 	normalized := make([]RolePlanInput, 0, len(in.Roles))
 	for _, r := range in.Roles {
 		r.RoleName = strings.TrimSpace(r.RoleName)
@@ -228,6 +259,16 @@ func (s *DraftService) AssignRoles(ctx context.Context, actor string, draftID uu
 			r.Scope = "global"
 		}
 		normalized = append(normalized, r)
+	}
+	bundleIDs := uniqueIDs(in.BundleIDs)
+	if s.bundles != nil {
+		current, err := s.listRoles(ctx, draftID)
+		if err != nil {
+			return nil, err
+		}
+		if normalized, bundleIDs, err = s.bundles.Plan(ctx, normalized, in.BundleIDs, current, trusted); err != nil {
+			return nil, err
+		}
 	}
 
 	var out []domain.RolePlan
@@ -242,24 +283,7 @@ func (s *DraftService) AssignRoles(ctx context.Context, actor string, draftID uu
 		if domain.DraftState(state) != domain.DraftStateDraft {
 			return httperror.Conflict("roles can only be assigned while the draft is in state 'draft'")
 		}
-
-		if _, err := tx.Exec(ctx, `DELETE FROM role_plans WHERE draft_id = $1`, draftID); err != nil {
-			return httperror.Internal(err)
-		}
-
-		for _, r := range normalized {
-			id := uuid.New()
-			if _, err := tx.Exec(ctx, `
-INSERT INTO role_plans (id, draft_id, role_name, group_name, scope)
-VALUES ($1, $2, $3, NULLIF($4, ''), $5)`, id, draftID, r.RoleName, r.GroupName, r.Scope); err != nil {
-				return httperror.Internal(err)
-			}
-		}
-
-		if _, err := tx.Exec(ctx, `UPDATE employment_drafts SET updated_at = now() WHERE id = $1`, draftID); err != nil {
-			return httperror.Internal(err)
-		}
-		return nil
+		return writePlans(ctx, tx, draftID, normalized, bundleIDs)
 	})
 	if err != nil {
 		return nil, err
@@ -270,7 +294,7 @@ VALUES ($1, $2, $3, NULLIF($4, ''), $5)`, id, draftID, r.RoleName, r.GroupName, 
 		return nil, err
 	}
 	if err := s.audit.Record(ctx, actor, "draft.assign_roles", "employment_draft", draftID, map[string]any{
-		"count": len(out),
+		"roles": len(out), "bundles": bundleIDs,
 	}); err != nil {
 		return nil, err
 	}
@@ -312,8 +336,9 @@ UPDATE employment_drafts
 
 func (s *DraftService) listRoles(ctx context.Context, draftID uuid.UUID) ([]domain.RolePlan, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, draft_id, role_name, COALESCE(group_name, ''), COALESCE(scope, ''), created_at
-FROM role_plans WHERE draft_id = $1 ORDER BY role_name`, draftID)
+SELECT rp.id, rp.draft_id, rp.role_name, COALESCE(rp.group_name, ''), COALESCE(rp.scope, ''), rp.created_at, rp.bundle_id, COALESCE(b.name, '')
+  FROM role_plans rp LEFT JOIN access_bundles b ON b.id = rp.bundle_id
+ WHERE rp.draft_id = $1 ORDER BY rp.role_name`, draftID)
 	if err != nil {
 		return nil, httperror.Internal(err)
 	}
@@ -321,7 +346,7 @@ FROM role_plans WHERE draft_id = $1 ORDER BY role_name`, draftID)
 	out := make([]domain.RolePlan, 0, 4)
 	for rows.Next() {
 		var r domain.RolePlan
-		if err := rows.Scan(&r.ID, &r.DraftID, &r.RoleName, &r.GroupName, &r.Scope, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.DraftID, &r.RoleName, &r.GroupName, &r.Scope, &r.CreatedAt, &r.BundleID, &r.BundleName); err != nil {
 			return nil, httperror.Internal(err)
 		}
 		out = append(out, r)

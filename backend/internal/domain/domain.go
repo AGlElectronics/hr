@@ -171,6 +171,8 @@ type EmploymentDraft struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	Roles        []RolePlan `json:"roles,omitempty"`
+	// BundleIDs are the access groups the draft holds.
+	BundleIDs []uuid.UUID `json:"bundle_ids,omitempty"`
 	// PersonName and DepartmentName are filled in lists.
 	PersonName     string `json:"person_name,omitempty"`
 	DepartmentName string `json:"department_name,omitempty"`
@@ -185,6 +187,13 @@ type RolePlan struct {
 	GroupName string    `json:"group_name,omitempty"`
 	Scope     string    `json:"scope,omitempty"` // e.g. "global", "dept:xyz"
 	CreatedAt time.Time `json:"created_at"`
+	// BundleID and BundleName say which access group the role came from
+	// (empty: assigned individually).
+	BundleID   *uuid.UUID `json:"bundle_id,omitempty"`
+	BundleName string     `json:"bundle_name,omitempty"`
+	// Retired is true when the module no longer publishes the role; HR
+	// keeps it until someone removes it.
+	Retired bool `json:"retired,omitempty"`
 }
 
 // ProvisioningJob tracks one attempt to push a draft to the external

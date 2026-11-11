@@ -3,8 +3,13 @@ package http
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -42,6 +47,21 @@ type Deps struct {
 	Den *denlink.Client
 	// RoleGate is shared with the background worker; nil builds one from Config.
 	RoleGate *service.RoleGateService
+	// Jobs is the background job queue the app runs; nil runs jobs inline
+	// right after they are queued (tests).
+	Jobs *service.JobQueue
+	// Services is filled by NewRouter with the services background workers
+	// need (may be nil).
+	Services *Services
+}
+
+// Services exposes what NewRouter built to the background workers in app.
+type Services struct {
+	Lifecycle *service.LifecycleService
+	Audit     *service.AuditService
+	Settings  *service.SettingsService
+	People    *service.PeopleService
+	Provision *service.ProvisionService
 }
 
 // NewRoleGate builds the training-requirement service from config. Gating
@@ -99,7 +119,18 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Get("/readyz", health.readyz)
 
 	self := catalog.Self(firstOf(cfg.AdminGroups), firstOf(cfg.ViewerGroups), firstOf(cfg.LeadGroups))
-	fetcher := &catalog.Fetcher{Sources: catalog.ParseSources(cfg.RoleCatalogSources), Self: self}
+	fetcher := &catalog.Fetcher{
+		Sources:  catalog.ParseSources(cfg.RoleCatalogSources),
+		Discover: catalog.DenSources(deps.Pool),
+		Cache:    &catalog.PGCache{Pool: deps.Pool},
+		Self:     self,
+		TTL:      30 * time.Second,
+	}
+	validator := service.NewAccessValidator(fetcher.FetchAll)
+	jobs := deps.Jobs
+	if jobs == nil {
+		jobs = service.NewJobQueue(deps.Pool, deps.Logger, true)
+	}
 	r.Get("/api/role-catalog", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, self)
 	})
@@ -124,6 +155,9 @@ func NewRouter(deps Deps, version string) http.Handler {
 	accounts, _ := deps.IdP.(provisioners.AccountManager)
 	deptSvc := service.NewDepartmentService(deps.Pool, auditWriter, groupEnsurer, accounts, firstOf(cfg.LeadGroups))
 	deptSvc.SetHooks(service.ParseOffboardHooks(cfg.DepartmentHooks), deps.Logger)
+	deptSvc.SetRoleValidator(validator)
+	bundleSvc := service.NewBundleService(deps.Pool, auditWriter, validator)
+	draftSvc.SetBundles(bundleSvc)
 	onboardingSvc := service.NewOnboardingService(peopleSvc, draftSvc, deptSvc, func(ctx context.Context) []service.RolePlanInput {
 		out := []service.RolePlanInput{}
 		for _, r := range catalog.DefaultRoles(fetcher.FetchAll(ctx)) {
@@ -150,6 +184,35 @@ func NewRouter(deps Deps, version string) http.Handler {
 	lifecycleSvc := service.NewLifecycleService(deps.Pool, peopleSvc, draftSvc, deptSvc, accounts, deps.Mailer, settingsSvc, auditWriter)
 	lifecycleSvc.SetRoleGate(gate)
 	lifecycleSvc.SetOffboardHooks(service.ParseOffboardHooks(cfg.OffboardHooks))
+	lifecycleSvc.SetAccessPlanning(bundleSvc, validator)
+	jobs.Handle(service.JobBundleSync, service.JobHandler{Run: func(ctx context.Context, j service.Job) error {
+		var p struct {
+			BundleID uuid.UUID `json:"bundle_id"`
+		}
+		if err := json.Unmarshal(j.Payload, &p); err != nil {
+			return service.Permanent(err)
+		}
+		holders, err := bundleSvc.Holders(ctx, p.BundleID)
+		if err != nil {
+			return err
+		}
+		var failed []string
+		for _, d := range holders {
+			if err := lifecycleSvc.ResyncBundle(ctx, j.CreatedBy, d, p.BundleID); err != nil {
+				failed = append(failed, d.String()+": "+err.Error())
+			}
+		}
+		_ = jobs.SetResult(ctx, j.ID, map[string]any{"holders": len(holders), "failed": failed})
+		if len(failed) > 0 {
+			return fmt.Errorf("%d of %d memberships could not be updated: %s", len(failed), len(holders), strings.Join(failed, "; "))
+		}
+		return nil
+	}})
+	bundleSvc.SetSync(func(ctx context.Context, actor string, id uuid.UUID) error {
+		_, err := jobs.Enqueue(ctx, service.JobBundleSync, map[string]string{"bundle_id": id.String()}, actor, 3)
+		return err
+	})
+	bundles := &bundleHandler{svc: bundleSvc}
 	dashSvc := service.NewDashboardService(deps.Pool, peopleSvc, deptSvc)
 	misc := &miscHandler{settings: settingsSvc, dash: dashSvc, directory: directory, depts: deptSvc,
 		relevantGroups: func(ctx context.Context) map[string]bool {
@@ -170,7 +233,11 @@ func NewRouter(deps Deps, version string) http.Handler {
 	people := &peopleHandler{svc: peopleSvc, lifecycle: lifecycleSvc, chk: chk}
 	drafts := &draftHandler{svc: draftSvc, chk: chk}
 	prov := &provisionHandler{svc: provSvc, chk: chk}
-	auditH := &auditHandler{svc: service.NewAuditService(deps.Pool)}
+	auditSvc := service.NewAuditService(deps.Pool)
+	auditH := &auditHandler{svc: auditSvc}
+	if deps.Services != nil {
+		*deps.Services = Services{Lifecycle: lifecycleSvc, Audit: auditSvc, Settings: settingsSvc, People: peopleSvc, Provision: provSvc}
+	}
 
 	require := auth.Require
 	global := auth.RequireGlobal
@@ -228,6 +295,25 @@ func NewRouter(deps Deps, version string) http.Handler {
 			api.With(require(authz.PeopleRead)).Get("/dashboard", misc.dashboard)
 			api.With(global(authz.IdPGroupsRead)).Get("/idp/groups", misc.idpGroups)
 			api.With(global(authz.AuditRead)).Get("/audit", auditH.list)
+			api.With(require(authz.PeopleRead)).Get("/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+				id, err := parseUUIDParam(r, "id")
+				if !ok(w, r, err) {
+					return
+				}
+				j, err := jobs.Get(r.Context(), id)
+				if !ok(w, r, err) {
+					return
+				}
+				writeJSON(w, http.StatusOK, j)
+			})
+
+			api.Route("/access-bundles", func(br chi.Router) {
+				br.With(require(authz.PeopleRead)).Get("/", bundles.list)
+				br.With(require(authz.PeopleRead)).Get("/{id}", bundles.get)
+				br.With(global(authz.BundlesManage)).Post("/", bundles.create)
+				br.With(global(authz.BundlesManage)).Put("/{id}", bundles.update)
+				br.With(global(authz.BundlesManage)).Delete("/{id}", bundles.delete)
+			})
 
 			api.Route("/departments", func(dr chi.Router) {
 				dr.With(require(authz.PeopleRead)).Get("/", depts.list)

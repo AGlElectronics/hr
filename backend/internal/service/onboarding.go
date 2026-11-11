@@ -81,7 +81,7 @@ func (s *OnboardingService) applyDefaults(ctx context.Context, actor string, dra
 		}
 		roles = append(roles, RolePlanInput{RoleName: r.RoleName, GroupName: r.GroupName, Scope: r.Scope})
 	}
-	_, err := s.drafts.AssignRoles(ctx, actor, draftID, AssignRolesInput{Roles: roles})
+	_, err := s.drafts.AssignDefaults(ctx, actor, draftID, AssignRolesInput{Roles: roles, BundleIDs: dept.DefaultBundles})
 	return err
 }
 
