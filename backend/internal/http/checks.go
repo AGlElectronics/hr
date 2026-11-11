@@ -85,7 +85,13 @@ func (h *checksHandler) addressSearch(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, httperror.New(httperror.CodeUpstream, "Address suggestions are unavailable right now; type the address by hand.").WithCause(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "items": items})
+	// provider is shown in the privacy notice next to the address field:
+	// what is typed there is sent to this server.
+	provider := ""
+	if u, err := url.Parse(st.AddressLookupURL); err == nil {
+		provider = u.Host
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "items": items, "provider": provider})
 }
 
 // allow keeps HR to a few lookups per second in total (public Photon is

@@ -15,6 +15,7 @@ import (
 
 	"github.com/AGlElectronics/hr/backend/internal/clientip"
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
+	"github.com/AGlElectronics/hr/backend/internal/netguard"
 )
 
 const (
@@ -141,6 +142,10 @@ type Config struct {
 	// is paired with Den; standalone (the default) does not.
 	DenMode denlink.Mode
 
+	// OutboundAllowedHosts are host names or CIDRs the address lookup may
+	// reach even though they are internal (e.g. a self-hosted Photon).
+	OutboundAllowedHosts []string
+
 	CORSAllowedOrigins []string
 	// TrustedProxyCIDRs lists the proxies whose X-Forwarded-For entries are
 	// believed when working out the client IP (TRUSTED_PROXY_CIDRS).
@@ -200,6 +205,7 @@ func Load() (*Config, error) {
 		SMTPFromName:                getEnv("SMTP_FROM_NAME", ""),
 		DenInternalURL:              getEnv("DEN_INTERNAL_URL", ""),
 		DenMode:                     denlink.Mode(getEnv("DEN_MODE", string(denlink.ModeStandalone))),
+		OutboundAllowedHosts:        splitCSV(getEnv("OUTBOUND_ALLOWED_HOSTS", "")),
 		CORSAllowedOrigins:          splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3003")),
 		ShutdownTimeout:             getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 	}
@@ -248,6 +254,9 @@ func (c *Config) validate() error {
 	}
 	if !c.IsDevelopment() {
 		errs = append(errs, c.devSecretsInUse()...)
+	}
+	if _, err := netguard.New(c.OutboundAllowedHosts, false); err != nil {
+		errs = append(errs, err.Error())
 	}
 	kcAny := c.KeycloakBaseURL != "" || c.KeycloakClientSecret != ""
 	if kcAny {

@@ -27,6 +27,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
 	"github.com/AGlElectronics/hr/backend/internal/mail"
+	"github.com/AGlElectronics/hr/backend/internal/netguard"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
 	"github.com/AGlElectronics/hr/backend/internal/qualification"
 	"github.com/AGlElectronics/hr/backend/internal/service"
@@ -152,7 +153,13 @@ func NewRouter(deps Deps, version string) http.Handler {
 	peopleSvc := service.NewPeopleService(deps.Pool, auditWriter, settingsSvc, usernames)
 	draftSvc := service.NewDraftService(deps.Pool, auditWriter)
 	provSvc := service.NewProvisionService(deps.Pool, draftSvc, peopleSvc, deps.IdP, auditWriter, settingsSvc)
-	checks := &checksHandler{people: peopleSvc, settings: settingsSvc, client: &http.Client{Timeout: 5 * time.Second}}
+	guard, _ := netguard.New(cfg.OutboundAllowedHosts, false) // validated by config.Load
+	settingsSvc.SetAddressURLCheck(func(raw string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return guard.CheckURL(ctx, raw)
+	})
+	checks := &checksHandler{people: peopleSvc, settings: settingsSvc, client: guard.Client(5 * time.Second)}
 	groupEnsurer, _ := deps.IdP.(provisioners.GroupEnsurer)
 	accounts, _ := deps.IdP.(provisioners.AccountManager)
 	deptSvc := service.NewDepartmentService(deps.Pool, auditWriter, groupEnsurer, accounts, firstOf(cfg.LeadGroups))
