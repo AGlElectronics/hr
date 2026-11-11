@@ -39,6 +39,22 @@ func TestValidateRefusesDevSecretsOutsideDevelopment(t *testing.T) {
 	}
 }
 
+func TestValidateDirectoryToken(t *testing.T) {
+	c := validProd()
+	c.DirectoryToken = "short"
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "HR_DIRECTORY_TOKEN must be at least 16") {
+		t.Fatalf("want short token refused, got %v", err)
+	}
+	c.DirectoryToken = "hr-directory-dev-token"
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "HR_DIRECTORY_TOKEN uses the development value") {
+		t.Fatalf("want dev token refused, got %v", err)
+	}
+	c.DirectoryToken = "a-long-random-directory-token"
+	if err := c.validate(); err != nil {
+		t.Fatalf("real token refused: %v", err)
+	}
+}
+
 func TestValidateProvisionerMode(t *testing.T) {
 	c := validProd()
 	c.KeycloakBaseURL, c.KeycloakClientSecret = "", ""

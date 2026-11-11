@@ -201,7 +201,11 @@ func NewRouter(deps Deps, version string) http.Handler {
 	directory, _ := deps.IdP.(provisioners.Directory)
 	lifecycleSvc := service.NewLifecycleService(deps.Pool, peopleSvc, draftSvc, deptSvc, accounts, deps.Mailer, settingsSvc, auditWriter)
 	lifecycleSvc.SetRoleGate(gate)
-	lifecycleSvc.SetOffboardHooks(service.ParseOffboardHooks(cfg.OffboardHooks))
+	hookIssuer := cfg.OIDCIssuerURL
+	if cfg.AuthMode == config.AuthModeDev {
+		hookIssuer = "dev:"
+	}
+	lifecycleSvc.SetOffboardHooks(service.ParseOffboardHooks(cfg.OffboardHooks), hookIssuer)
 	lifecycleSvc.SetAccessPlanning(bundleSvc, validator)
 	lifecycleSvc.SetMode(cfg.ProvisionerMode)
 	notifier := service.NewAdminNotifier(settingsSvc, deps.Mailer, directory, cfg.AdminGroups)
@@ -287,6 +291,10 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 	require := auth.Require
 	global := auth.RequireGlobal
+
+	// Service-to-service: bearer HR_DIRECTORY_TOKEN, no user sign-in.
+	directoryH := &directoryHandler{token: cfg.DirectoryToken, depts: deptSvc, bundles: bundleSvc}
+	r.Get("/api/internal/directory/groups", directoryH.groups)
 
 	r.Route("/api", func(api chi.Router) {
 		api.Use(den.RequirePaired)

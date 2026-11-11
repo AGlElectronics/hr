@@ -43,6 +43,7 @@ var knownDevSecrets = []string{
 	"learn-service-dev-token",
 	"wiki-service-dev-token",
 	"tasks-service-dev-token",
+	"hr-directory-dev-token",
 	"conservicesdev",
 	"change-me",
 }
@@ -123,6 +124,10 @@ type Config struct {
 	// renamed (e.g. Tasks, which keeps one space per department), in the
 	// same comma-separated "url|token" format as OffboardHooks.
 	DepartmentHooks string
+	// DirectoryToken lets other modules (the wiki's share dialog) list HR's
+	// departments and access groups at GET /api/internal/directory/groups.
+	// Empty turns the endpoint off.
+	DirectoryToken string
 	// RoleGateInterval is how often pending role grants are re-checked.
 	RoleGateInterval time.Duration
 
@@ -196,6 +201,7 @@ func Load() (*Config, error) {
 		LearnServiceToken:           getEnv("LEARN_SERVICE_TOKEN", ""),
 		OffboardHooks:               getEnv("OFFBOARD_HOOKS", ""),
 		DepartmentHooks:             getEnv("DEPARTMENT_HOOKS", ""),
+		DirectoryToken:              getEnv("HR_DIRECTORY_TOKEN", ""),
 		RoleGateInterval:            getEnvDuration("ROLE_GATE_INTERVAL", time.Minute),
 		SMTPHost:                    getEnv("SMTP_HOST", ""),
 		SMTPPort:                    getEnvInt("SMTP_PORT", 587),
@@ -255,6 +261,9 @@ func (c *Config) validate() error {
 	if !c.IsDevelopment() {
 		errs = append(errs, c.devSecretsInUse()...)
 	}
+	if c.DirectoryToken != "" && len(c.DirectoryToken) < 16 {
+		errs = append(errs, "HR_DIRECTORY_TOKEN must be at least 16 characters")
+	}
 	if _, err := netguard.New(c.OutboundAllowedHosts, false); err != nil {
 		errs = append(errs, err.Error())
 	}
@@ -297,6 +306,7 @@ func (c *Config) devSecretsInUse() []string {
 	secrets := map[string]string{
 		"KEYCLOAK_CLIENT_SECRET": c.KeycloakClientSecret,
 		"LEARN_SERVICE_TOKEN":    c.LearnServiceToken,
+		"HR_DIRECTORY_TOKEN":     c.DirectoryToken,
 		"SMTP_PASSWORD":          c.SMTPPassword,
 		"S3_SECRET_ACCESS_KEY":   c.S3SecretAccessKey,
 	}
