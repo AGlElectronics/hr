@@ -362,7 +362,7 @@ UPDATE people SET first_name = $2, last_name = $3, nickname = NULLIF($4, ''), le
        display_name = $6, email = $7, org_email = NULLIF($8, ''), phone = NULLIF($9, ''),
        address = $10, social_handles = $11, emergency_contact = $12, status = $13,
        notes = NULLIF($14, ''), date_of_birth = NULLIF($15, '')::date, is_banned = $16,
-       username = NULLIF($17, ''), updated_at = now()
+       username = NULLIF($17, ''), retention_warned_at = NULL, updated_at = now()
  WHERE id = $1
 RETURNING `+personCols,
 		id, in.FirstName, in.LastName, in.Nickname, legal, display, in.Email, in.OrgEmail,
@@ -452,7 +452,8 @@ func CriticalChanges(prev *domain.Person, in PersonInput) []string {
 // SetStatus moves a person's lifecycle status (used by draft transitions).
 func (s *PeopleService) SetStatus(ctx context.Context, id uuid.UUID, status domain.PersonStatus) error {
 	if _, err := s.pool.Exec(ctx, `
-UPDATE people SET status = $2, paused_at = CASE WHEN $2 = 'paused' THEN COALESCE(paused_at, now()) END, updated_at = now()
+UPDATE people SET status = $2, paused_at = CASE WHEN $2 = 'paused' THEN COALESCE(paused_at, now()) END,
+       retention_warned_at = NULL, updated_at = now()
  WHERE id = $1`, id, string(status)); err != nil {
 		return httperror.Internal(err)
 	}

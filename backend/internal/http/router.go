@@ -258,6 +258,9 @@ func NewRouter(deps Deps, version string) http.Handler {
 		_, err := auditSvc.PurgeExpired(ctx)
 		return err
 	})
+	notifier := service.NewAdminNotifier(settingsSvc, deps.Mailer, directory, cfg.AdminGroups)
+	retention := service.NewRetentionService(deps.Pool, settingsSvc, lifecycleSvc, notifier, auditWriter)
+	maint.Add("retention", retention.Run)
 	if deps.Services != nil {
 		*deps.Services = Services{Lifecycle: lifecycleSvc, Audit: auditSvc, Settings: settingsSvc, People: peopleSvc, Provision: provSvc,
 			Maintenance: maint}
@@ -331,6 +334,14 @@ func NewRouter(deps Deps, version string) http.Handler {
 					return
 				}
 				writeJSON(w, http.StatusOK, j)
+			})
+
+			api.With(global(authz.SettingsManage)).Get("/retention/candidates", func(w http.ResponseWriter, r *http.Request) {
+				items, rs, err := retention.Candidates(r.Context())
+				if !ok(w, r, err) {
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"items": items, "retention": rs})
 			})
 
 			api.Route("/access-bundles", func(br chi.Router) {
