@@ -14,7 +14,6 @@ help:
 	@echo "  logs          Tail backend + frontend logs."
 	@echo "  migrate       Run the one-shot migrator against the running Postgres."
 	@echo "  tidy          go mod tidy for the backend."
-	@echo "  sqlc          Run sqlc generate (requires sqlc on PATH)."
 	@echo "  test-backend  Run Go tests."
 	@echo "  test-frontend Run frontend tests."
 	@echo "  fmt           gofmt + goimports."
@@ -44,10 +43,6 @@ migrate:
 .PHONY: tidy
 tidy:
 	cd backend && $(GO) mod tidy
-
-.PHONY: sqlc
-sqlc:
-	cd backend && sqlc generate
 
 .PHONY: test-backend
 test-backend:

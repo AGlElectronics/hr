@@ -110,7 +110,6 @@ func NewRouter(deps Deps, version string) http.Handler {
 	draftSvc := service.NewDraftService(deps.Pool, auditWriter)
 	provSvc := service.NewProvisionService(deps.Pool, draftSvc, peopleSvc, deps.IdP, deps.Workspace, auditWriter, settingsSvc)
 	checks := &checksHandler{people: peopleSvc, settings: settingsSvc, client: &http.Client{Timeout: 5 * time.Second}}
-	notifySvc := service.NewNotifyService(deps.Logger, draftSvc, peopleSvc, auditWriter)
 	groupEnsurer, _ := deps.IdP.(provisioners.GroupEnsurer)
 	deptSvc := service.NewDepartmentService(deps.Pool, auditWriter, groupEnsurer)
 	deptSvc.SetHooks(service.ParseOffboardHooks(deps.Config.DepartmentHooks), deps.Logger)
@@ -147,8 +146,6 @@ func NewRouter(deps Deps, version string) http.Handler {
 	people := &peopleHandler{svc: peopleSvc, lifecycle: lifecycleSvc}
 	drafts := &draftHandler{svc: draftSvc}
 	prov := &provisionHandler{svc: provSvc}
-	notify := &notifyHandler{svc: notifySvc}
-
 	r.Route("/api", func(api chi.Router) {
 		api.Use(den.RequirePaired)
 		api.Use(auth.Middleware(deps.Config, deps.OIDCVerifier))
@@ -221,7 +218,6 @@ func NewRouter(deps Deps, version string) http.Handler {
 				dr.Get("/{id}", drafts.get)
 				dr.Put("/{id}/roles", drafts.assignRoles)
 				dr.Get("/{id}/provisioning-jobs", prov.listJobs)
-				dr.Post("/{id}/notify", notify.send)
 			})
 		})
 	})
