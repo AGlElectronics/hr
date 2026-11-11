@@ -56,10 +56,11 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	defer pool.Close()
 	logger.Info().Msg("database pool ready")
 
-	ws := provisioners.NewFakeWorkspace(logger)
-
 	var idp provisioners.IdPProvisioner
-	if cfg.KeycloakConfigured() {
+	switch {
+	case cfg.ProvisionerMode == config.ProvisionerOff:
+		logger.Info().Msg("IDP_PROVISIONER_MODE=off: HR keeps records only and touches no accounts")
+	case cfg.KeycloakConfigured():
 		kc, err := provisioners.NewKeycloakIdP(provisioners.KeycloakConfig{
 			BaseURL:          cfg.KeycloakBaseURL,
 			Realm:            cfg.KeycloakRealm,
@@ -76,9 +77,10 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			Str("base_url", cfg.KeycloakBaseURL).
 			Str("realm", cfg.KeycloakRealm).
 			Msg("keycloak idp provisioner ready")
-	} else {
+	default:
+		// config.Load refuses this outside APP_ENV=development.
 		idp = provisioners.NewFakeIdP(logger)
-		logger.Warn().Msg("KEYCLOAK_* not set — using FakeIdP (no real user creation)")
+		logger.Warn().Msg("KEYCLOAK_* not set: development only, using an in-memory fake identity provider (no real accounts)")
 	}
 
 	var oidcVerifier *auth.OIDCVerifier
@@ -130,7 +132,6 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		Logger:       logger,
 		OIDCVerifier: oidcVerifier,
 		IdP:          idp,
-		Workspace:    ws,
 		Mailer:       mailer,
 		Den:          den,
 	}, Version)

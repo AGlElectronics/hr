@@ -23,16 +23,15 @@ type ProvisionService struct {
 	pool      *pgxpool.Pool
 	drafts    *DraftService
 	people    *PeopleService
-	idp       provisioners.IdPProvisioner
-	workspace provisioners.WorkspaceProvisioner
+	idp       provisioners.IdPProvisioner // nil when IDP_PROVISIONER_MODE=off
 	audit     *audit.Writer
 	settings  *SettingsService
 	gate      *RoleGateService // nil = no training requirements
 }
 
-// NewProvisionService wires a ProvisionService.
-func NewProvisionService(pool *pgxpool.Pool, drafts *DraftService, people *PeopleService, idp provisioners.IdPProvisioner, ws provisioners.WorkspaceProvisioner, aud *audit.Writer, settings *SettingsService) *ProvisionService {
-	return &ProvisionService{pool: pool, drafts: drafts, people: people, idp: idp, workspace: ws, audit: aud, settings: settings}
+// NewProvisionService wires a ProvisionService. idp is nil in off mode.
+func NewProvisionService(pool *pgxpool.Pool, drafts *DraftService, people *PeopleService, idp provisioners.IdPProvisioner, aud *audit.Writer, settings *SettingsService) *ProvisionService {
+	return &ProvisionService{pool: pool, drafts: drafts, people: people, idp: idp, audit: aud, settings: settings}
 }
 
 // SetRoleGate holds roles with unmet training requirements back at Complete.
@@ -160,13 +159,13 @@ func (s *ProvisionService) Complete(ctx context.Context, actor string, draftID u
 	if _, err := s.drafts.Transition(ctx, draft.ID, domain.DraftStateProvisioning); err != nil {
 		return nil, err
 	}
-	idpJob, idpRes, idpErr := s.runIdPWith(ctx, &gated, person, []string{deptGroup}, true)
-	jobs := []domain.ProvisioningJob{idpJob}
-	var wsErr error
-	if idpErr == nil {
-		var wsJob domain.ProvisioningJob
-		wsJob, wsErr = s.runWorkspace(ctx, draft, person)
-		jobs = append(jobs, wsJob)
+	jobs := []domain.ProvisioningJob{}
+	var idpRes provisioners.IdPResult
+	var idpErr, wsErr error
+	if s.idp != nil {
+		var idpJob domain.ProvisioningJob
+		idpJob, idpRes, idpErr = s.runIdPWith(ctx, &gated, person, []string{deptGroup}, true)
+		jobs = append(jobs, idpJob)
 	}
 
 	res := &CompleteResult{Jobs: jobs, GroupsApplied: idpRes.GroupsApplied, AccountCreated: idpRes.Created,
@@ -211,23 +210,6 @@ func (s *ProvisionService) Complete(ctx context.Context, actor string, draftID u
 	}
 	res.OK = true
 	return res, nil
-}
-
-func (s *ProvisionService) runWorkspace(ctx context.Context, draft *domain.EmploymentDraft, person *domain.Person) (domain.ProvisioningJob, error) {
-	job := s.beginJob(ctx, draft.ID, domain.TargetWorkspace)
-
-	res, err := s.workspace.Provision(ctx, provisioners.WorkspaceAccount{
-		HRPersonID:  person.ID,
-		Email:       person.Email,
-		DisplayName: person.DisplayName,
-		Attributes:  nil,
-	})
-	if err != nil {
-		s.finishJob(ctx, &job, domain.JobStatusFailed, err.Error(), "")
-		return job, err
-	}
-	s.finishJob(ctx, &job, domain.JobStatusSucceeded, "", res.ExternalID)
-	return job, nil
 }
 
 func (s *ProvisionService) beginJob(ctx context.Context, draftID uuid.UUID, target domain.ProvisionTarget) domain.ProvisioningJob {

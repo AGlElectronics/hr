@@ -34,8 +34,8 @@ type Deps struct {
 	Logger       zerolog.Logger
 	OIDCVerifier *auth.OIDCVerifier
 
-	IdP       provisioners.IdPProvisioner
-	Workspace provisioners.WorkspaceProvisioner
+	// IdP is nil when IDP_PROVISIONER_MODE=off.
+	IdP provisioners.IdPProvisioner
 	// Mailer sends HR's own notices; nil when SMTP is not configured.
 	Mailer mail.Sender
 	// Den is the pairing with Den; nil means a fresh standalone client.
@@ -108,7 +108,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	usernames, _ := deps.IdP.(provisioners.UsernameDirectory)
 	peopleSvc := service.NewPeopleService(deps.Pool, auditWriter, settingsSvc, usernames)
 	draftSvc := service.NewDraftService(deps.Pool, auditWriter)
-	provSvc := service.NewProvisionService(deps.Pool, draftSvc, peopleSvc, deps.IdP, deps.Workspace, auditWriter, settingsSvc)
+	provSvc := service.NewProvisionService(deps.Pool, draftSvc, peopleSvc, deps.IdP, auditWriter, settingsSvc)
 	checks := &checksHandler{people: peopleSvc, settings: settingsSvc, client: &http.Client{Timeout: 5 * time.Second}}
 	groupEnsurer, _ := deps.IdP.(provisioners.GroupEnsurer)
 	deptSvc := service.NewDepartmentService(deps.Pool, auditWriter, groupEnsurer)

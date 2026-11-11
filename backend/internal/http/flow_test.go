@@ -369,8 +369,7 @@ func newTestClientWith(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config
 		Config:    cfg,
 		Pool:      pool,
 		Logger:    zerolog.Nop(),
-		IdP:       provisioners.NewFakeIdP(zerolog.Nop()),
-		Workspace: provisioners.NewFakeWorkspace(zerolog.Nop()),
+		IdP:    provisioners.NewFakeIdP(zerolog.Nop()),
 	}
 	if adjust != nil {
 		adjust(pool, cfg, &deps)

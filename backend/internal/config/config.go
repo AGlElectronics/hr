@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,30 @@ const (
 	AuthModeDev  = "dev"
 	AuthModeOIDC = "oidc"
 )
+
+// Provisioner modes (IDP_PROVISIONER_MODE).
+const (
+	// ProvisionerManage creates, renames, disables and deletes accounts and
+	// creates the groups HR assigns (HR owns the realm).
+	ProvisionerManage = "manage"
+	// ProvisionerLink only finds existing accounts and manages membership of
+	// HR's groups; it never creates, renames or deletes accounts or groups.
+	ProvisionerLink = "link"
+	// ProvisionerOff keeps records in HR only; no IdP is touched.
+	ProvisionerOff = "off"
+)
+
+// knownDevSecrets are values shipped in the development Compose files and
+// examples. Outside APP_ENV=development the backend refuses to start with any
+// of them, so a copied dev file never reaches production.
+var knownDevSecrets = []string{
+	"hr-provisioner-dev-secret",
+	"learn-service-dev-token",
+	"wiki-service-dev-token",
+	"tasks-service-dev-token",
+	"conservicesdev",
+	"change-me",
+}
 
 type Config struct {
 	AppEnv      string
@@ -44,8 +69,11 @@ type Config struct {
 	// AccessGroups are the IdP groups allowed to use HR at all (OIDC mode).
 	AccessGroups []string
 
-	// Keycloak Admin API (IdP provisioner). When BaseURL is set, HR creates
-	// real users in the shared realm instead of using FakeIdP.
+	// ProvisionerMode is IDP_PROVISIONER_MODE: manage, link or off.
+	ProvisionerMode string
+
+	// Keycloak Admin API (IdP provisioner). Required in manage and link mode
+	// outside development.
 	KeycloakBaseURL      string
 	KeycloakRealm        string
 	KeycloakClientID     string
@@ -119,6 +147,7 @@ func Load() (*Config, error) {
 		OIDCClientID:                getEnv("OIDC_CLIENT_ID", ""),
 		OIDCAudience:                getEnv("OIDC_AUDIENCE", ""),
 		AccessGroups:                splitCSV(getEnv("HR_ACCESS_GROUPS", "hr-admin")),
+		ProvisionerMode:             strings.ToLower(getEnv("IDP_PROVISIONER_MODE", ProvisionerManage)),
 		KeycloakBaseURL:             getEnv("KEYCLOAK_BASE_URL", ""),
 		KeycloakRealm:               getEnv("KEYCLOAK_REALM", "conservices"),
 		KeycloakClientID:            getEnv("KEYCLOAK_CLIENT_ID", "hr-provisioner"),
@@ -177,6 +206,18 @@ func (c *Config) validate() error {
 			errs = append(errs, "OIDC_CLIENT_ID is required when AUTH_MODE=oidc")
 		}
 	}
+	switch c.ProvisionerMode {
+	case ProvisionerManage, ProvisionerLink, ProvisionerOff:
+	default:
+		errs = append(errs, "IDP_PROVISIONER_MODE must be 'manage', 'link' or 'off'")
+	}
+	if c.ProvisionerMode != ProvisionerOff && !c.KeycloakConfigured() && !c.IsDevelopment() {
+		errs = append(errs, "IDP_PROVISIONER_MODE="+c.ProvisionerMode+" needs KEYCLOAK_BASE_URL and KEYCLOAK_CLIENT_SECRET "+
+			"(set IDP_PROVISIONER_MODE=off to keep records in HR only)")
+	}
+	if !c.IsDevelopment() {
+		errs = append(errs, c.devSecretsInUse()...)
+	}
 	kcAny := c.KeycloakBaseURL != "" || c.KeycloakClientSecret != ""
 	if kcAny {
 		if c.KeycloakBaseURL == "" {
@@ -205,6 +246,37 @@ func (c *Config) validate() error {
 		return errors.New("invalid config: " + strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// IsDevelopment reports APP_ENV=development.
+func (c *Config) IsDevelopment() bool { return c.AppEnv == "development" }
+
+// devSecretsInUse lists every secret-bearing variable that holds a known
+// development value.
+func (c *Config) devSecretsInUse() []string {
+	secrets := map[string]string{
+		"KEYCLOAK_CLIENT_SECRET": c.KeycloakClientSecret,
+		"LEARN_SERVICE_TOKEN":    c.LearnServiceToken,
+		"SMTP_PASSWORD":          c.SMTPPassword,
+		"S3_SECRET_ACCESS_KEY":   c.S3SecretAccessKey,
+	}
+	for name, raw := range map[string]string{"OFFBOARD_HOOKS": c.OffboardHooks, "DEPARTMENT_HOOKS": c.DepartmentHooks} {
+		for i, entry := range strings.Split(raw, ",") {
+			if _, token, ok := strings.Cut(entry, "|"); ok {
+				secrets[fmt.Sprintf("%s (entry %d)", name, i+1)] = strings.TrimSpace(token)
+			}
+		}
+	}
+	var out []string
+	for name, v := range secrets {
+		for _, dev := range knownDevSecrets {
+			if v != "" && v == dev {
+				out = append(out, name+" uses the development value "+strconv.Quote(dev)+"; set a real secret (APP_ENV="+c.AppEnv+")")
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // KeycloakConfigured reports whether real IdP provisioning should be wired.
