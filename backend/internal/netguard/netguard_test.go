@@ -30,17 +30,17 @@ func TestCheckURL(t *testing.T) {
 	}
 	ctx := context.Background()
 	for raw, ok := range map[string]bool{
-		"https://8.8.8.8/api":          true,
-		"http://photon.internal:2322":  true,
-		"http://10.20.1.5":             true,
-		"http://127.0.0.1:8080":        false,
-		"http://169.254.169.254/meta":  false,
-		"http://[::1]/":                false,
-		"file:///etc/passwd":           false,
-		"gopher://8.8.8.8":             false,
-		"https://user:pw@8.8.8.8/":     false,
-		"http://localhost:5432":        false,
-		"http://10.21.0.1":             false,
+		"https://8.8.8.8/api":            true,
+		"http://photon.internal:2322":    true,
+		"http://10.20.1.5":               true,
+		"http://127.0.0.1:8080":          false,
+		"http://169.254.169.254/meta":    false,
+		"http://[::1]/":                  false,
+		"file:///etc/passwd":             false,
+		"gopher://8.8.8.8":               false,
+		"https://user:pw@8.8.8.8/":       false,
+		"http://localhost:5432":          false,
+		"http://10.21.0.1":               false,
 		"https://does-not-exist.invalid": false,
 	} {
 		err := g.CheckURL(ctx, raw)

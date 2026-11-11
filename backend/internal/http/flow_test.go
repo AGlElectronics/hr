@@ -433,21 +433,21 @@ func newTestRouter(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config.Con
 	t.Cleanup(catalogSrv.Close)
 
 	cfg := &config.Config{
-		AppEnv:             "development",
-		RoleCatalogSources: "stash=" + catalogSrv.URL,
-		AppBaseURL:     "http://localhost:8110",
-		HTTPAddr:       ":0",
-		AuthMode:       config.AuthModeDev,
-		DevDefaultUser: "test-hr-admin",
+		AppEnv:                    "development",
+		RoleCatalogSources:        "stash=" + catalogSrv.URL,
+		AppBaseURL:                "http://localhost:8110",
+		HTTPAddr:                  ":0",
+		AuthMode:                  config.AuthModeDev,
+		DevDefaultUser:            "test-hr-admin",
 		KeycloakSendPasswordSetup: true,
 		AdminGroups:               []string{"hr-admin"},
-		ViewerGroups:   []string{"hr-viewer"},
-		LeadGroups:     []string{"hr-lead"},
+		ViewerGroups:              []string{"hr-viewer"},
+		LeadGroups:                []string{"hr-lead"},
 	}
 	deps := hrhttp.Deps{
-		Config:    cfg,
-		Pool:      pool,
-		Logger:    zerolog.Nop(),
+		Config: cfg,
+		Pool:   pool,
+		Logger: zerolog.Nop(),
 		IdP:    provisioners.NewFakeIdP(zerolog.Nop()),
 	}
 	if adjust != nil {

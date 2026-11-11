@@ -27,7 +27,7 @@ func TestParseDenModules(t *testing.T) {
 type memCache struct{ m map[string]Module }
 
 func (c *memCache) Load(context.Context) (map[string]Module, error) { return c.m, nil }
-func (c *memCache) Save(_ context.Context, m Module) error         { c.m[m.Module] = m; return nil }
+func (c *memCache) Save(_ context.Context, m Module) error          { c.m[m.Module] = m; return nil }
 
 func TestFetchAllCachesAndFallsBack(t *testing.T) {
 	var down atomic.Bool
