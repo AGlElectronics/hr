@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -71,6 +72,44 @@ func TestPauseAndBanDisableTheAccount(t *testing.T) {
 	_ = pool.QueryRow(context.Background(), `SELECT string_agg(action, ',' ORDER BY occurred_at) FROM audit_events WHERE entity_id = $1 AND action LIKE 'person.%ban%'`, person).Scan(&actions)
 	if actions != "person.ban,person.unban" {
 		t.Fatalf("ban audit: %q", actions)
+	}
+}
+
+// TestOffboardHookPayload: modules hear the issuer, subject and external id
+// of who left.
+func TestOffboardHookPayload(t *testing.T) {
+	got := make(chan service.OffboardHookPayload, 1)
+	var auth string
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		var p service.OffboardHookPayload
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		got <- p
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hook.Close()
+	idp := provisioners.NewFakeIdP(zerolog.Nop())
+	router, pool := newTestRouter(t, func(pool *pgxpool.Pool, cfg *config.Config, deps *hrhttp.Deps) {
+		cfg.OffboardHooks = hook.URL + "|hook-test-token"
+		deps.IdP = idp
+		deps.Jobs = service.NewJobQueue(pool, zerolog.Nop(), true)
+	})
+	admin := clientAs(router, "test-hr-admin", "")
+	dept, _ := createDepartment(t, admin, pool, "Hook")
+	person, draft := startOnboarding(t, admin, pool, dept, "Hanna")
+	completeOnboarding(t, admin, draft)
+	if _, err := pool.Exec(context.Background(), `UPDATE people SET idp_subject = 'sub-hanna' WHERE id = $1`, person); err != nil {
+		t.Fatal(err)
+	}
+	if rec := admin(http.MethodPost, "/api/people/"+person+"/offboard", map[string]any{"reason": "moved away"}); rec.Code != http.StatusOK {
+		t.Fatalf("offboard %d %s", rec.Code, rec.Body.String())
+	}
+	p := <-got
+	if p.Issuer != "dev:" || p.Subject != "sub-hanna" || p.ExternalID != "idp:"+person || p.IdPUserID != p.ExternalID || p.Username == "" {
+		t.Fatalf("hook payload: %+v", p)
+	}
+	if auth != "Bearer hook-test-token" {
+		t.Fatalf("hook auth %q", auth)
 	}
 }
 

@@ -35,6 +35,7 @@ type LifecycleService struct {
 	audit    *audit.Writer
 	gate     *RoleGateService // nil = no training requirements
 	hooks    []OffboardHook   // modules told after an offboarding
+	issuer   string           // OIDC issuer sent with the subject to hooks
 	// bundles and validator plan access against access groups and catalogs
 	// (nil: roles are taken as given).
 	bundles   *BundleService
@@ -103,14 +104,29 @@ func ParseOffboardHooks(raw string) []OffboardHook {
 }
 
 // SetOffboardHooks registers the modules told after an offboarding.
-func (s *LifecycleService) SetOffboardHooks(hooks []OffboardHook) { s.hooks = hooks }
+// issuer is the OIDC issuer the subjects belong to (sent with each subject,
+// since a subject is only unique per issuer).
+func (s *LifecycleService) SetOffboardHooks(hooks []OffboardHook, issuer string) {
+	s.hooks, s.issuer = hooks, issuer
+}
+
+// OffboardHookPayload is what OFFBOARD_HOOKS receive.
+type OffboardHookPayload struct {
+	Issuer  string `json:"issuer"`
+	Subject string `json:"subject"`
+	// ExternalID is the account id in the identity provider (Keycloak user
+	// id); IdPUserID is the same value under its older name.
+	ExternalID string `json:"external_id"`
+	IdPUserID  string `json:"idp_user_id"`
+	Username   string `json:"username"`
+}
 
 // notifyOffboardHooks tells each hook who left. A failed hook becomes a
 // warning the admin sees; it never blocks the offboarding itself.
 func (s *LifecycleService) notifyOffboardHooks(ctx context.Context, subject, idpUserID, username string) []string {
 	var warnings []string
 	for _, h := range s.hooks {
-		body, _ := json.Marshal(map[string]string{"subject": subject, "idp_user_id": idpUserID, "username": username})
+		body, _ := json.Marshal(OffboardHookPayload{Issuer: s.issuer, Subject: subject, ExternalID: idpUserID, IdPUserID: idpUserID, Username: username})
 		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		req, err := http.NewRequestWithContext(hctx, http.MethodPost, h.URL, bytes.NewReader(body))
 		if err != nil {
