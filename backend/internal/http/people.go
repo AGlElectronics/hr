@@ -154,6 +154,33 @@ func (h *peopleHandler) setStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+func (h *peopleHandler) ban(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUIDParam(r, "id")
+	if !ok(w, r, err) || !ok(w, r, authz.NotSelf(r.Context(), id, "ban status")) {
+		return
+	}
+	var in service.BanInput
+	if !ok(w, r, decodeJSON(r, &in)) {
+		return
+	}
+	p, err := h.lifecycle.SetBan(r.Context(), actorFrom(r), id, in)
+	if !ok(w, r, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (h *peopleHandler) resendSetup(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUIDParam(r, "id")
+	if !ok(w, r, err) || !ok(w, r, h.chk.Person(r.Context(), authz.AccessManage, id)) {
+		return
+	}
+	if !ok(w, r, h.lifecycle.ResendPasswordSetup(r.Context(), actorFrom(r), id)) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+}
+
 func (h *peopleHandler) offboard(w http.ResponseWriter, r *http.Request) {
 	id, err := parseUUIDParam(r, "id")
 	if !ok(w, r, err) || !ok(w, r, authz.NotSelf(r.Context(), id, "account")) {

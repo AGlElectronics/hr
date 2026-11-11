@@ -84,6 +84,25 @@ type Config struct {
 	// Where the set-password email link sends the user afterwards.
 	KeycloakSetupClientID    string
 	KeycloakSetupRedirectURI string
+	// KeycloakSendPasswordSetup emails new accounts a set-password link
+	// (needs SMTP on the realm). Off for brokered accounts, which sign in
+	// through the convention's SSO and have no local password.
+	KeycloakSendPasswordSetup bool
+	// KeycloakGroupParent / KeycloakGroupPrefix place HR's groups: full path
+	// <parent>/<prefix><name>, e.g. /conservices/dept-security.
+	KeycloakGroupParent string
+	KeycloakGroupPrefix string
+	// KeycloakUserAttributes are the attributes HR may write (only those the
+	// realm's user profile declares are written).
+	KeycloakUserAttributes []string
+
+	// JobInterval is how often the job worker looks for due jobs (it also
+	// wakes when a job is queued). MaintenanceInterval runs retention, purges,
+	// stuck-onboarding recovery and Workspace clean-up. ReviewScanInterval
+	// scans the IdP for accounts without an HR record (0: off).
+	JobInterval         time.Duration
+	MaintenanceInterval time.Duration
+	ReviewScanInterval  time.Duration
 
 	// RoleCatalogSources: "stash=http://…/api/role-catalog,events=…".
 	RoleCatalogSources string
@@ -159,6 +178,13 @@ func Load() (*Config, error) {
 		KeycloakClientSecret:        getEnv("KEYCLOAK_CLIENT_SECRET", ""),
 		KeycloakSetupClientID:       getEnv("KEYCLOAK_SETUP_CLIENT_ID", ""),
 		KeycloakSetupRedirectURI:    getEnv("KEYCLOAK_SETUP_REDIRECT_URI", ""),
+		KeycloakSendPasswordSetup:   getEnvBool("KEYCLOAK_SEND_PASSWORD_SETUP", true),
+		KeycloakGroupParent:         getEnv("KEYCLOAK_GROUP_PARENT", ""),
+		KeycloakGroupPrefix:         getEnv("KEYCLOAK_GROUP_PREFIX", ""),
+		KeycloakUserAttributes:      splitCSV(getEnv("KEYCLOAK_USER_ATTRIBUTES", "hrPersonId,nickname,orgEmail")),
+		JobInterval:                 getEnvDuration("JOB_INTERVAL", 10*time.Second),
+		MaintenanceInterval:         getEnvDuration("MAINTENANCE_INTERVAL", time.Hour),
+		ReviewScanInterval:          getEnvDuration("REVIEW_SCAN_INTERVAL", 15*time.Minute),
 		RoleCatalogSources:          getEnv("ROLE_CATALOG_SOURCES", ""),
 		QualificationCatalogSources: getEnv("QUALIFICATION_CATALOG_SOURCES", ""),
 		LearnHoldingsURL:            getEnv("LEARN_HOLDINGS_URL", ""),

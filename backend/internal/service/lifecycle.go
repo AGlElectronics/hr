@@ -39,7 +39,20 @@ type LifecycleService struct {
 	// (nil: roles are taken as given).
 	bundles   *BundleService
 	validator *AccessValidator
+	// linkOnly: IDP_PROVISIONER_MODE=link (never disable or delete accounts).
+	// off: IDP_PROVISIONER_MODE=off (no accounts at all).
+	linkOnly, off bool
+	// workspace suspends Google Workspace accounts on offboarding (nil: off).
+	workspace *WorkspaceService
 }
+
+// SetMode tells the service the provisioner mode (manage, link or off).
+func (s *LifecycleService) SetMode(mode string) {
+	s.linkOnly, s.off = mode == "link", mode == "off"
+}
+
+// SetWorkspace suspends Workspace accounts on offboarding.
+func (s *LifecycleService) SetWorkspace(w *WorkspaceService) { s.workspace = w }
 
 // SetAccessPlanning checks access changes against the catalogs and expands
 // access groups.
@@ -94,10 +107,10 @@ func (s *LifecycleService) SetOffboardHooks(hooks []OffboardHook) { s.hooks = ho
 
 // notifyOffboardHooks tells each hook who left. A failed hook becomes a
 // warning the admin sees; it never blocks the offboarding itself.
-func (s *LifecycleService) notifyOffboardHooks(ctx context.Context, subject, username string) []string {
+func (s *LifecycleService) notifyOffboardHooks(ctx context.Context, subject, idpUserID, username string) []string {
 	var warnings []string
 	for _, h := range s.hooks {
-		body, _ := json.Marshal(map[string]string{"subject": subject, "username": username})
+		body, _ := json.Marshal(map[string]string{"subject": subject, "idp_user_id": idpUserID, "username": username})
 		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		req, err := http.NewRequestWithContext(hctx, http.MethodPost, h.URL, bytes.NewReader(body))
 		if err != nil {
@@ -176,6 +189,9 @@ func idpFailure(action string, err error) error {
 }
 
 func (s *LifecycleService) accountState(ctx context.Context, ext string) AccountState {
+	if s.off {
+		return AccountState{State: "off"}
+	}
 	if ext == "" {
 		return AccountState{State: "none"}
 	}
@@ -554,9 +570,40 @@ func AccountChangedNotice(org string, p *domain.Person, renamed, orgChanged bool
 	return mail.Message{To: p.Email, Subject: subject, Body: b.String()}
 }
 
+// StatusResult is the person after a status or ban change, plus anything HR
+// could not do in the IdP.
+type StatusResult struct {
+	*domain.Person
+	Warnings []string `json:"warnings"`
+}
+
+// setLogin enables or disables the person's account. Link mode never
+// disables accounts in the convention's realm.
+func (s *LifecycleService) setLogin(ctx context.Context, p *domain.Person, enabled bool) []string {
+	if s.accounts == nil || p.IdPUserID == "" {
+		return []string{}
+	}
+	if s.linkOnly {
+		return []string{"This installation links to the convention's own accounts (link mode), so HR did not disable or enable the account."}
+	}
+	err := s.accounts.SetEnabled(ctx, p.IdPUserID, enabled)
+	switch {
+	case errors.Is(err, provisioners.ErrAccountNotFound):
+		return []string{"Their account no longer exists in the identity provider."}
+	case err != nil:
+		verb := "disable"
+		if enabled {
+			verb = "enable"
+		}
+		return []string{idpFailure(verb+" their account", err).Error() + " Change it in the identity provider by hand."}
+	}
+	return []string{}
+}
+
 // SetStatus pauses an active person or reactivates a paused one. Pausing
-// keeps their access; offboard to remove it.
-func (s *LifecycleService) SetStatus(ctx context.Context, actor string, personID uuid.UUID, in StatusInput) (*domain.Person, error) {
+// disables their account (they cannot sign in) and keeps their access for
+// when they come back; reactivating enables it again unless they are banned.
+func (s *LifecycleService) SetStatus(ctx context.Context, actor string, personID uuid.UUID, in StatusInput) (*StatusResult, error) {
 	p, err := s.people.Get(ctx, personID)
 	if err != nil {
 		return nil, err
@@ -568,13 +615,82 @@ func (s *LifecycleService) SetStatus(ctx context.Context, actor string, personID
 	default:
 		return nil, httperror.Conflict("only active ↔ paused can be changed here (status is " + string(p.Status) + ")")
 	}
+	warnings := s.setLogin(ctx, p, to == domain.PersonActive && !p.IsBanned)
 	if err := s.people.SetStatus(ctx, personID, to); err != nil {
 		return nil, err
 	}
-	if err := s.audit.Record(ctx, actor, "person.status."+string(to), "person", personID, nil); err != nil {
+	if err := s.audit.Record(ctx, actor, "person.status."+string(to), "person", personID, map[string]any{"warnings": warnings}); err != nil {
 		return nil, err
 	}
-	return s.people.Get(ctx, personID)
+	p, err = s.people.Get(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+	return &StatusResult{Person: p, Warnings: warnings}, nil
+}
+
+// BanInput bans or unbans a person.
+type BanInput struct {
+	Banned bool   `json:"banned"`
+	Reason string `json:"reason"`
+}
+
+// SetBan bans a person (their account is disabled and they cannot be
+// onboarded again) or lifts the ban (an active person's account is enabled
+// again).
+func (s *LifecycleService) SetBan(ctx context.Context, actor string, personID uuid.UUID, in BanInput) (*StatusResult, error) {
+	in.Reason = strings.TrimSpace(in.Reason)
+	if in.Banned && in.Reason == "" {
+		return nil, httperror.Validation("validation failed", map[string]string{"reason": "required"})
+	}
+	p, err := s.people.Get(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+	if p.IsBanned == in.Banned {
+		return &StatusResult{Person: p, Warnings: []string{}}, nil
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE people SET is_banned = $2, updated_at = now() WHERE id = $1`, personID, in.Banned); err != nil {
+		return nil, httperror.Internal(err)
+	}
+	warnings := s.setLogin(ctx, p, !in.Banned && p.Status == domain.PersonActive)
+	action := "person.ban"
+	if !in.Banned {
+		action = "person.unban"
+	}
+	if err := s.audit.Record(ctx, actor, action, "person", personID, map[string]any{"reason": in.Reason, "warnings": warnings}); err != nil {
+		return nil, err
+	}
+	p, err = s.people.Get(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+	return &StatusResult{Person: p, Warnings: warnings}, nil
+}
+
+// ResendPasswordSetup emails the person a new set-password link (when the
+// first one failed or expired). The realm needs SMTP.
+func (s *LifecycleService) ResendPasswordSetup(ctx context.Context, actor string, personID uuid.UUID) error {
+	p, err := s.people.Get(ctx, personID)
+	if err != nil {
+		return err
+	}
+	sender, ok := s.accounts.(provisioners.PasswordSetupSender)
+	switch {
+	case p.IdPUserID == "":
+		return httperror.Conflict("this person has no account yet")
+	case s.linkOnly:
+		return httperror.Conflict("this installation links to the convention's own accounts; passwords are managed there")
+	case !ok:
+		return httperror.Conflict("the identity provider cannot send set-password emails")
+	}
+	if err := sender.SendPasswordSetup(ctx, p.IdPUserID); err != nil {
+		if errors.Is(err, provisioners.ErrAccountNotFound) {
+			return httperror.Conflict("their account no longer exists in the identity provider")
+		}
+		return idpFailure("send the set-password email (check the realm's SMTP settings)", err)
+	}
+	return s.audit.Record(ctx, actor, "person.password_setup_email", "person", personID, nil)
 }
 
 // Offboard deletes the person's account, emails them that it was deleted,
@@ -600,6 +716,23 @@ func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID 
 		return nil, httperror.New(httperror.CodeUpstream, acc.Account.Error+" You can also offboard in HR only and delete the account in Keycloak by hand.")
 	case acc.Account.State == "missing":
 		warnings = append(warnings, "Their Keycloak account no longer exists, so there was nothing to delete.")
+	case acc.Account.State == "linked" && s.accounts != nil && s.linkOnly:
+		// The convention owns the account: take HR's groups and link away.
+		remove := []string{}
+		for g := range membershipGroups(acc.Memberships, uuid.Nil) {
+			remove = append(remove, g)
+		}
+		if lead, err := s.depts.LeadGroupsFor(ctx, personID); err == nil {
+			remove = append(remove, lead...)
+		}
+		err := s.accounts.UpdateMembership(ctx, acc.ExternalID, nil, remove)
+		if err == nil {
+			err = s.accounts.UpdateProfile(ctx, acc.ExternalID, provisioners.Profile{Attributes: map[string]string{provisioners.AttrHRPersonID: ""}})
+		}
+		if err != nil && !errors.Is(err, provisioners.ErrAccountNotFound) {
+			return nil, idpFailure("remove their HR groups", err)
+		}
+		warnings = append(warnings, "Their account belongs to the convention's identity provider and was not deleted; HR removed its groups from it.")
 	case acc.Account.State == "linked" && s.accounts != nil:
 		err := s.accounts.DeleteAccount(ctx, acc.ExternalID)
 		if err != nil && !errors.Is(err, provisioners.ErrAccountNotFound) {
@@ -650,10 +783,15 @@ UPDATE audit_events SET purge_after = now() + make_interval(months => $2) WHERE 
 		personID, keepMonths); err != nil {
 		return nil, httperror.Internal(err)
 	}
+	if s.workspace != nil {
+		if warn := s.workspace.Offboard(ctx, actor, acc.Person); warn != "" {
+			warnings = append(warnings, warn)
+		}
+	}
 	// Tell the other modules (the wiki orphans their private space). Only
 	// meaningful when the person ever had an IdP account.
 	if acc.ExternalID != "" {
-		warnings = append(warnings, s.notifyOffboardHooks(ctx, acc.ExternalID, username)...)
+		warnings = append(warnings, s.notifyOffboardHooks(ctx, firstNonEmpty(acc.Person.IdPSubject, acc.ExternalID), acc.ExternalID, username)...)
 	}
 	return &OffboardResult{Username: username, Warnings: warnings}, nil
 }

@@ -148,21 +148,21 @@ func TestRoleGating(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"waiting_for"`
 	}
-	rec = do(http.MethodPost, "/api/onboardings/"+view.Draft.ID+"/complete", nil)
-	var res struct {
+	completeOnboarding(t, do, view.Draft.ID)
+	type completeResult struct {
 		OK            bool     `json:"ok"`
 		GroupsApplied []string `json:"groups_applied"`
 		PendingGrants []grant  `json:"pending_grants"`
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &res)
-	if rec.Code != http.StatusOK || !res.OK {
-		t.Fatalf("complete %d %s", rec.Code, rec.Body.String())
+	res := provisioningResult[completeResult](t, do, view.Draft.ID)
+	if !res.OK {
+		t.Fatalf("complete result %+v", res)
 	}
 	if strings.Contains(strings.Join(res.GroupsApplied, ","), gatedGroup) || !strings.Contains(strings.Join(res.GroupsApplied, ","), "stash-volunteer") {
 		t.Fatalf("gated group must wait, volunteer must be applied: %v", res.GroupsApplied)
 	}
 	if len(res.PendingGrants) != 1 || res.PendingGrants[0].RoleKey != gatedRole || len(res.PendingGrants[0].WaitingFor) != 1 || res.PendingGrants[0].WaitingFor[0].Name != "First aid" {
-		t.Fatalf("pending grants in result: %s", rec.Body.String())
+		t.Fatalf("pending grants in result: %+v", res.PendingGrants)
 	}
 	grantID := res.PendingGrants[0].ID
 

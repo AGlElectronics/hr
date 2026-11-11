@@ -21,7 +21,8 @@ type OnboardingService struct {
 	depts  *DepartmentService
 	// suiteDefaults returns the roles modules mark as on by default (nil-safe).
 	suiteDefaults func(ctx context.Context) []RolePlanInput
-	gate          *RoleGateService // nil = no training requirements
+	gate          *RoleGateService  // nil = no training requirements
+	prov          *ProvisionService // nil: no provisioning status
 }
 
 // SetRoleGate shows roles waiting for training on the overview.
@@ -48,6 +49,49 @@ type OnboardingView struct {
 	MissingFields map[string]string       `json:"missing_fields"`
 	// PendingGrants are roles from this onboarding still waiting for training.
 	PendingGrants []PendingGrant `json:"pending_grants"`
+	// Provisioning is the latest "Complete" job (nil before the first one).
+	Provisioning *ProvisioningStatus `json:"provisioning,omitempty"`
+}
+
+// SetProvisioning shows the completion job's status on the overview.
+func (s *OnboardingService) SetProvisioning(p *ProvisionService) { s.prov = p }
+
+// Cancel rejects an onboarding that is still a draft. The person goes back
+// to applicant unless they have another onboarding or membership.
+func (s *OnboardingService) Cancel(ctx context.Context, actor string, draftID uuid.UUID, reason string) (*OnboardingView, error) {
+	d, err := s.drafts.Get(ctx, draftID)
+	if err != nil {
+		return nil, err
+	}
+	if d.State != domain.DraftStateDraft {
+		return nil, httperror.Conflict("only an onboarding that is still a draft can be cancelled (it is " + string(d.State) + ")")
+	}
+	if _, err := s.drafts.Transition(ctx, draftID, domain.DraftStateRejected); err != nil {
+		return nil, err
+	}
+	p, err := s.people.Get(ctx, d.PersonID)
+	if err != nil {
+		return nil, err
+	}
+	if p.Status == domain.PersonOnboarding {
+		var others bool
+		if err := s.people.pool.QueryRow(ctx, `
+SELECT EXISTS (SELECT 1 FROM employment_drafts WHERE person_id = $1 AND id <> $2 AND state IN ('draft', 'provisioning', 'active'))`,
+			d.PersonID, draftID).Scan(&others); err != nil {
+			return nil, httperror.Internal(err)
+		}
+		if !others {
+			if err := s.people.SetStatus(ctx, d.PersonID, domain.PersonApplicant); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := s.drafts.audit.Record(ctx, actor, "onboarding.cancel", "employment_draft", draftID, map[string]any{
+		"person_id": d.PersonID, "reason": reason,
+	}); err != nil {
+		return nil, err
+	}
+	return s.View(ctx, draftID)
 }
 
 func (s *OnboardingService) requireDepartment(ctx context.Context, id uuid.UUID) (*domain.Department, error) {
@@ -166,6 +210,11 @@ func (s *OnboardingService) View(ctx context.Context, draftID uuid.UUID) (*Onboa
 	v := &OnboardingView{Draft: draft, Person: person, MissingFields: MissingFields(person), PendingGrants: []PendingGrant{}}
 	if draft.DepartmentID != nil {
 		if v.Department, err = s.depts.Get(ctx, *draft.DepartmentID); err != nil {
+			return nil, err
+		}
+	}
+	if s.prov != nil {
+		if v.Provisioning, err = s.prov.Status(ctx, draftID); err != nil {
 			return nil, err
 		}
 	}

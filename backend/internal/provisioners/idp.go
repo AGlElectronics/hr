@@ -44,16 +44,42 @@ type IdPResult struct {
 	ExternalID string
 	// GroupsApplied echoes the groups actually set.
 	GroupsApplied []string
-	// TemporaryPassword is set when a brand-new IdP user was created and
-	// needs a one-time password (MVP Keycloak path). Empty on updates / fakes.
-	TemporaryPassword string
 	// Created is true when the IdP user did not exist before this call.
 	Created bool
 	// PasswordSetupEmailSent is true when the IdP emailed a set-password link.
 	PasswordSetupEmailSent bool
-	// PasswordSetupError explains why the email could not be sent; in that
-	// case TemporaryPassword is set as a fallback.
+	// PasswordSetupError explains why the email could not be sent (the
+	// realm needs SMTP). HR never sets a password; resend the email instead.
 	PasswordSetupError string
+}
+
+// PasswordSetupSender emails an existing user a new set-password link.
+type PasswordSetupSender interface {
+	SendPasswordSetup(ctx context.Context, userID string) error
+}
+
+// LinkOnlyReporter is implemented by provisioners that can run link-only
+// (IDP_PROVISIONER_MODE=link).
+type LinkOnlyReporter interface {
+	LinkOnly() bool
+}
+
+// UserInfo is one account in the IdP (review queue scan).
+type UserInfo struct {
+	ID            string            `json:"id"`
+	Username      string            `json:"username"`
+	Email         string            `json:"email"`
+	EmailVerified bool              `json:"email_verified"`
+	FirstName     string            `json:"first_name"`
+	LastName      string            `json:"last_name"`
+	Enabled       bool              `json:"enabled"`
+	Attributes    map[string]string `json:"attributes"`
+	CreatedAt     *time.Time        `json:"created_at,omitempty"`
+}
+
+// UserScanner pages through every account in the IdP.
+type UserScanner interface {
+	ScanUsers(ctx context.Context, fn func(UserInfo) error) error
 }
 
 // GroupEnsurer is implemented by IdPs that can create groups ahead of any
@@ -153,6 +179,12 @@ type FakeIdP struct {
 	mu          sync.Mutex
 	calls       []IdPUser
 	memberships []MembershipChange
+	enabled     map[string]bool
+	setupMails  []string
+	// Users are returned by ScanUsers (tests).
+	Users []UserInfo
+	// FailProvision makes Provision fail with this error (tests).
+	FailProvision error
 }
 
 // MembershipChange is one UpdateMembership call seen by FakeIdP.
@@ -181,11 +213,18 @@ func (f *FakeIdP) Provision(ctx context.Context, u IdPUser) (IdPResult, error) {
 
 	f.mu.Lock()
 	f.calls = append(f.calls, u)
+	fail := f.FailProvision
 	f.mu.Unlock()
+	if fail != nil {
+		return IdPResult{}, fail
+	}
 
 	// Deterministic external id: "idp:<uuid>" so tests can assert exact
 	// values without pre-seeding anything.
-	ext := "idp:" + u.HRPersonID.String()
+	ext, created := u.ExternalID, false
+	if ext == "" || (!strings.HasPrefix(ext, "idp:") && !f.scanned(ext)) {
+		ext, created = "idp:"+u.HRPersonID.String(), true
+	}
 	f.logger.Info().
 		Str("hr_person_id", u.HRPersonID.String()).
 		Str("username", u.Username).
@@ -196,7 +235,7 @@ func (f *FakeIdP) Provision(ctx context.Context, u IdPUser) (IdPResult, error) {
 
 	// Copy groups so the caller cannot mutate FakeIdP's stored call.
 	applied := append([]string(nil), u.Groups...)
-	return IdPResult{ExternalID: ext, GroupsApplied: applied, Created: true, PasswordSetupEmailSent: u.SendPasswordSetup}, nil
+	return IdPResult{ExternalID: ext, GroupsApplied: applied, Created: created, PasswordSetupEmailSent: created && u.SendPasswordSetup}, nil
 }
 
 // EnsureGroups logs the groups that a real IdP would create.
@@ -222,12 +261,23 @@ func (f *FakeIdP) ListGroups(_ context.Context) ([]GroupInfo, error) {
 	return out, nil
 }
 
-// GetAccount reports every fake-provisioned id as an enabled account.
+// GetAccount reports every fake-provisioned or scanned id as an account.
 func (f *FakeIdP) GetAccount(_ context.Context, userID string) (*AccountInfo, error) {
-	if !strings.HasPrefix(userID, "idp:") {
+	if !strings.HasPrefix(userID, "idp:") && !f.scanned(userID) {
 		return nil, ErrAccountNotFound
 	}
-	return &AccountInfo{Username: userID, Enabled: true}, nil
+	return &AccountInfo{Username: userID, Enabled: f.Enabled(userID)}, nil
+}
+
+func (f *FakeIdP) scanned(userID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.Users {
+		if u.ID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateMembership logs and records the membership change.
@@ -246,9 +296,65 @@ func (f *FakeIdP) Memberships() []MembershipChange {
 	return append([]MembershipChange(nil), f.memberships...)
 }
 
-// SetEnabled logs the enable/disable.
+// SetFailProvision makes Provision fail with err (nil: succeed again).
+func (f *FakeIdP) SetFailProvision(err error) {
+	f.mu.Lock()
+	f.FailProvision = err
+	f.mu.Unlock()
+}
+
+// SetUsers sets what ScanUsers returns.
+func (f *FakeIdP) SetUsers(users []UserInfo) {
+	f.mu.Lock()
+	f.Users = users
+	f.mu.Unlock()
+}
+
+// SetEnabled records the enable/disable.
 func (f *FakeIdP) SetEnabled(_ context.Context, userID string, enabled bool) error {
 	f.logger.Info().Str("user", userID).Bool("enabled", enabled).Msg("fake idp set enabled")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.enabled == nil {
+		f.enabled = map[string]bool{}
+	}
+	f.enabled[userID] = enabled
+	return nil
+}
+
+// Enabled reports the last SetEnabled for a user (true when never called).
+func (f *FakeIdP) Enabled(userID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.enabled[userID]
+	return !ok || v
+}
+
+// SendPasswordSetup records a resent set-password email.
+func (f *FakeIdP) SendPasswordSetup(_ context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setupMails = append(f.setupMails, userID)
+	return nil
+}
+
+// SetupMails lists users who got a resent set-password email.
+func (f *FakeIdP) SetupMails() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.setupMails...)
+}
+
+// ScanUsers returns Users.
+func (f *FakeIdP) ScanUsers(_ context.Context, fn func(UserInfo) error) error {
+	f.mu.Lock()
+	users := append([]UserInfo(nil), f.Users...)
+	f.mu.Unlock()
+	for _, u := range users {
+		if err := fn(u); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

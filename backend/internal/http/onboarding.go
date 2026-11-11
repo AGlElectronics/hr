@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -83,5 +84,23 @@ func (h *onboardingHandler) complete(w http.ResponseWriter, r *http.Request) {
 	if !ok(w, r, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	writeJSON(w, http.StatusAccepted, res)
+}
+
+func (h *onboardingHandler) cancel(w http.ResponseWriter, r *http.Request) {
+	id, good := h.own(w, r, authz.OnboardingManage)
+	if !good {
+		return
+	}
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if r.ContentLength != 0 && !ok(w, r, decodeJSON(r, &in)) {
+		return
+	}
+	v, err := h.svc.Cancel(r.Context(), actorFrom(r), id, strings.TrimSpace(in.Reason))
+	if !ok(w, r, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
 }

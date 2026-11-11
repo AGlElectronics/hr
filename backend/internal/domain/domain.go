@@ -277,15 +277,17 @@ const (
 
 // draftTransitions encodes the legal state transitions:
 //
-//	draft        -> provisioning
+//	draft        -> provisioning | rejected
 //	provisioning -> active | rejected | draft
 //
 // provisioning -> active is the onboarding "complete" path (HR reviewed on
 // the overview page); provisioning -> draft lets HR retry after a connector
-// failure. Rejected and active are terminal.
+// failure; draft -> rejected cancels an onboarding. Rejected and active are
+// terminal.
 var draftTransitions = map[DraftState]map[DraftState]bool{
 	DraftStateDraft: {
 		DraftStateProvisioning: true,
+		DraftStateRejected:     true,
 	},
 	DraftStateProvisioning: {
 		DraftStateActive:   true,

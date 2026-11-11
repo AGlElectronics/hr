@@ -139,21 +139,20 @@ func TestOnboardingWizard(t *testing.T) {
 		t.Fatalf("assign roles %d %s", rolesRec.Code, rolesRec.Body.String())
 	}
 
-	completeRec := do(http.MethodPost, "/api/onboardings/"+view.Draft.ID+"/complete", nil)
-	if completeRec.Code != http.StatusOK {
-		t.Fatalf("complete %d %s", completeRec.Code, completeRec.Body.String())
-	}
-	var res struct {
+	completeOnboarding(t, do, view.Draft.ID)
+	type completeResult struct {
 		OK            bool     `json:"ok"`
 		GroupsApplied []string `json:"groups_applied"`
 		SetupSent     bool     `json:"password_setup_email_sent"`
-		Draft         struct {
-			State string `json:"state"`
-		} `json:"draft"`
+		Password      string   `json:"temporary_password"`
 	}
-	_ = json.Unmarshal(completeRec.Body.Bytes(), &res)
-	if !res.OK || res.Draft.State != "active" || !res.SetupSent {
-		t.Fatalf("complete result: %s", completeRec.Body.String())
+	res := provisioningResult[completeResult](t, do, view.Draft.ID)
+	if !res.OK || !res.SetupSent || res.Password != "" {
+		t.Fatalf("complete result: %+v", res)
+	}
+	jobs := do(http.MethodGet, "/api/drafts/"+view.Draft.ID+"/provisioning-jobs", nil).Body.String()
+	if !strings.Contains(jobs, `"attempt":1`) || strings.Contains(jobs, "password=") {
+		t.Fatalf("provisioning jobs: %s", jobs)
 	}
 	want := map[string]bool{"dept-" + slug: true, "stash-volunteer": true, "stash-lead": true}
 	for _, g := range res.GroupsApplied {
@@ -314,6 +313,23 @@ func TestSettingsOrgEmailDomain(t *testing.T) {
 	}
 }
 
+// provisioningResult reads the result of an onboarding's completion job.
+func provisioningResult[T any](t *testing.T, do testClient, draftID string) T {
+	t.Helper()
+	var v struct {
+		Provisioning struct {
+			Status string `json:"status"`
+			Result T      `json:"result"`
+		} `json:"provisioning"`
+	}
+	rec := do(http.MethodGet, "/api/onboardings/"+draftID, nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &v)
+	if v.Provisioning.Status != "succeeded" {
+		t.Fatalf("provisioning status: %s", rec.Body.String())
+	}
+	return v.Provisioning.Result
+}
+
 func uniqueEmail(name string) string {
 	return fmt.Sprintf("%s+%d@example.test", name, time.Now().UnixNano())
 }
@@ -415,7 +431,8 @@ func newTestRouter(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config.Con
 		HTTPAddr:       ":0",
 		AuthMode:       config.AuthModeDev,
 		DevDefaultUser: "test-hr-admin",
-		AdminGroups:    []string{"hr-admin"},
+		KeycloakSendPasswordSetup: true,
+		AdminGroups:               []string{"hr-admin"},
 		ViewerGroups:   []string{"hr-viewer"},
 		LeadGroups:     []string{"hr-lead"},
 	}

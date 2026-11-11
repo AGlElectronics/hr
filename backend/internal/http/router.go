@@ -62,6 +62,8 @@ type Services struct {
 	Settings  *service.SettingsService
 	People    *service.PeopleService
 	Provision *service.ProvisionService
+	// Maintenance holds the periodic housekeeping tasks.
+	Maintenance *service.Maintenance
 }
 
 // NewRoleGate builds the training-requirement service from config. Gating
@@ -177,7 +179,11 @@ func NewRouter(deps Deps, version string) http.Handler {
 		gate = NewRoleGate(cfg, deps.Pool, deps.IdP, deps.Logger)
 	}
 	provSvc.SetRoleGate(gate)
+	provSvc.SetPasswordSetup(cfg.KeycloakSendPasswordSetup)
+	provSvc.SetDepartments(deptSvc)
+	provSvc.Register(jobs)
 	onboardingSvc.SetRoleGate(gate)
+	onboardingSvc.SetProvisioning(provSvc)
 	roleGate := &roleGateHandler{svc: gate, quals: &qualification.Fetcher{Sources: catalog.ParseSources(cfg.QualificationCatalogSources)}, chk: chk}
 
 	directory, _ := deps.IdP.(provisioners.Directory)
@@ -185,6 +191,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	lifecycleSvc.SetRoleGate(gate)
 	lifecycleSvc.SetOffboardHooks(service.ParseOffboardHooks(cfg.OffboardHooks))
 	lifecycleSvc.SetAccessPlanning(bundleSvc, validator)
+	lifecycleSvc.SetMode(cfg.ProvisionerMode)
 	jobs.Handle(service.JobBundleSync, service.JobHandler{Run: func(ctx context.Context, j service.Job) error {
 		var p struct {
 			BundleID uuid.UUID `json:"bundle_id"`
@@ -235,8 +242,18 @@ func NewRouter(deps Deps, version string) http.Handler {
 	prov := &provisionHandler{svc: provSvc, chk: chk}
 	auditSvc := service.NewAuditService(deps.Pool)
 	auditH := &auditHandler{svc: auditSvc}
+	maint := service.NewMaintenance(deps.Pool, deps.Logger)
+	maint.Add("recover stuck onboardings", func(ctx context.Context) error {
+		_, err := provSvc.RecoverStuck(ctx)
+		return err
+	})
+	maint.Add("purge expired access history", func(ctx context.Context) error {
+		_, err := auditSvc.PurgeExpired(ctx)
+		return err
+	})
 	if deps.Services != nil {
-		*deps.Services = Services{Lifecycle: lifecycleSvc, Audit: auditSvc, Settings: settingsSvc, People: peopleSvc, Provision: provSvc}
+		*deps.Services = Services{Lifecycle: lifecycleSvc, Audit: auditSvc, Settings: settingsSvc, People: peopleSvc, Provision: provSvc,
+			Maintenance: maint}
 	}
 
 	require := auth.Require
@@ -278,6 +295,8 @@ func NewRouter(deps Deps, version string) http.Handler {
 				pr.With(require(authz.AccessManage)).Put("/{id}/access", people.changeAccess)
 				pr.With(require(authz.PeoplePause)).Post("/{id}/status", people.setStatus)
 				pr.With(global(authz.PeopleOffboard)).Post("/{id}/offboard", people.offboard)
+				pr.With(global(authz.PeopleOffboard)).Post("/{id}/ban", people.ban)
+				pr.With(require(authz.AccessManage)).Post("/{id}/password-setup-email", people.resendSetup)
 			})
 
 			api.Get("/settings", misc.getSettings)
@@ -330,6 +349,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 				or.With(require(authz.PeopleRead)).Get("/{id}", onboarding.get)
 				or.With(require(authz.OnboardingManage)).Put("/{id}/details", onboarding.updateDetails)
 				or.With(require(authz.AccessManage)).Post("/{id}/complete", onboarding.complete)
+				or.With(require(authz.OnboardingManage)).Post("/{id}/cancel", onboarding.cancel)
 			})
 
 			api.Route("/drafts", func(dr chi.Router) {

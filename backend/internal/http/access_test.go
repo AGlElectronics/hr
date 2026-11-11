@@ -123,21 +123,28 @@ func completeOnboarding(t *testing.T, do testClient, draftID string) {
 	if rec.Code >= 300 {
 		t.Fatalf("complete %d %s", rec.Code, rec.Body.String())
 	}
+	if st := waitProvisioning(t, do, draftID); st != "succeeded" {
+		t.Fatalf("provisioning %s: %s", st, do(http.MethodGet, "/api/onboardings/"+draftID, nil).Body.String())
+	}
+}
+
+// waitProvisioning waits until the onboarding's completion job finished and
+// returns its status (succeeded or failed).
+func waitProvisioning(t *testing.T, do testClient, draftID string) string {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		var v struct {
-			Draft struct{ State string } `json:"draft"`
+			Provisioning struct{ Status string } `json:"provisioning"`
 		}
 		_ = json.Unmarshal(do(http.MethodGet, "/api/onboardings/"+draftID, nil).Body.Bytes(), &v)
-		if v.Draft.State == "active" {
-			return
-		}
-		if v.Draft.State == "draft" {
-			t.Fatalf("provisioning failed: %s", do(http.MethodGet, "/api/onboardings/"+draftID, nil).Body.String())
+		if s := v.Provisioning.Status; s == "succeeded" || s == "failed" {
+			return s
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("provisioning did not finish")
+	return ""
 }
 
 // waitFor polls a boolean query until it is true.

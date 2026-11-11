@@ -3,7 +3,6 @@ package provisioners
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,8 +31,24 @@ type KeycloakConfig struct {
 	SetupRedirectURI string
 	// SetupLinkLifespan is how long the set-password link stays valid.
 	SetupLinkLifespan time.Duration
-	HTTPClient        *http.Client
+	// LinkOnly is IDP_PROVISIONER_MODE=link: HR finds existing accounts
+	// (by id, username or email) and manages membership of its groups, but
+	// never creates, renames or deletes accounts and never creates groups.
+	LinkOnly bool
+	// GroupParent is the path of the group HR's groups live under
+	// (KEYCLOAK_GROUP_PARENT, e.g. "/conservices"); empty: top level.
+	GroupParent string
+	// GroupPrefix is put in front of every group name HR assigns
+	// (KEYCLOAK_GROUP_PREFIX, e.g. "cs-").
+	GroupPrefix string
+	// Attributes HR may write (KEYCLOAK_USER_ATTRIBUTES). HR writes an
+	// attribute only if it is also declared in the realm's user profile.
+	Attributes []string
+	HTTPClient *http.Client
 }
+
+// DefaultAttributes are the user attributes HR writes by default.
+var DefaultAttributes = []string{AttrHRPersonID, AttrNickname, AttrOrgEmail}
 
 // KeycloakIdP creates/updates users in Keycloak via the Admin REST API.
 type KeycloakIdP struct {
@@ -43,8 +58,13 @@ type KeycloakIdP struct {
 	mu          sync.Mutex
 	token       string
 	tokenExpiry time.Time
-	groupCache  map[string]string // name -> id
+	groupCache  map[string]string // path -> id
+	declared    map[string]bool   // user-profile attributes; nil = unknown
+	declaredAt  time.Time
 }
+
+// ErrNoAccount means link mode found no existing account for the person.
+var ErrNoAccount = errors.New("no account found in the identity provider; ask its administrators to create one, then try again")
 
 // NewKeycloakIdP builds a Keycloak-backed IdPProvisioner.
 func NewKeycloakIdP(cfg KeycloakConfig, logger zerolog.Logger) (*KeycloakIdP, error) {
@@ -59,11 +79,26 @@ func NewKeycloakIdP(cfg KeycloakConfig, logger zerolog.Logger) (*KeycloakIdP, er
 	if cfg.SetupLinkLifespan <= 0 {
 		cfg.SetupLinkLifespan = 72 * time.Hour
 	}
+	if len(cfg.Attributes) == 0 {
+		cfg.Attributes = DefaultAttributes
+	}
+	cfg.GroupParent = "/" + strings.Trim(strings.TrimSpace(cfg.GroupParent), "/")
+	if cfg.GroupParent == "/" {
+		cfg.GroupParent = ""
+	}
 	return &KeycloakIdP{
 		cfg:        cfg,
 		logger:     logger.With().Str("component", "keycloak_idp").Logger(),
 		groupCache: map[string]string{},
 	}, nil
+}
+
+// LinkOnly reports link mode.
+func (k *KeycloakIdP) LinkOnly() bool { return k.cfg.LinkOnly }
+
+// GroupPath is the full Keycloak path of an HR group name.
+func (k *KeycloakIdP) GroupPath(name string) string {
+	return k.cfg.GroupParent + "/" + k.cfg.GroupPrefix + strings.TrimPrefix(name, "/")
 }
 
 // errUnauthorized marks an Admin API 401 (stale/rotated service token).
@@ -83,8 +118,9 @@ func (k *KeycloakIdP) withFreshTokenRetry(op func() error) error {
 	return err
 }
 
-// Provision creates or updates the user, syncs groups, and either emails a
-// set-password link or sets a temporary password for brand-new users.
+// Provision creates (manage mode) or finds (link mode) the user, updates it,
+// syncs groups, and emails a brand-new user a set-password link when asked.
+// It never sets a password itself.
 func (k *KeycloakIdP) Provision(ctx context.Context, u IdPUser) (IdPResult, error) {
 	var res IdPResult
 	err := k.withFreshTokenRetry(func() error {
@@ -121,13 +157,17 @@ func (k *KeycloakIdP) provisionOnce(ctx context.Context, u IdPUser) (IdPResult, 
 		attrs[key] = v
 	}
 	attrs[AttrHRPersonID] = u.HRPersonID.String()
+	attrs = k.allowedAttributes(ctx, token, attrs)
 
 	userID, err := k.linkedOrOwnedUser(ctx, token, u, username)
 	if err != nil {
 		return IdPResult{}, err
 	}
 	created := false
-	if userID == "" {
+	switch {
+	case userID == "" && k.cfg.LinkOnly:
+		return IdPResult{}, ErrNoAccount
+	case userID == "":
 		userID, err = k.createUser(ctx, token, map[string]any{
 			"username":      username,
 			"enabled":       true,
@@ -141,7 +181,12 @@ func (k *KeycloakIdP) provisionOnce(ctx context.Context, u IdPUser) (IdPResult, 
 			return IdPResult{}, err
 		}
 		created = true
-	} else {
+	case k.cfg.LinkOnly:
+		// The convention owns the account: only HR's own attribute.
+		if err := k.patchUserOnce(ctx, token, userID, map[string]any{}, map[string]string{AttrHRPersonID: attrs[AttrHRPersonID]}); err != nil {
+			return IdPResult{}, err
+		}
+	default:
 		changes := map[string]any{"enabled": true, "email": u.Email, "firstName": first, "lastName": last}
 		if err := k.patchUserOnce(ctx, token, userID, changes, attrs); err != nil {
 			return IdPResult{}, err
@@ -154,22 +199,11 @@ func (k *KeycloakIdP) provisionOnce(ctx context.Context, u IdPUser) (IdPResult, 
 	}
 
 	res := IdPResult{ExternalID: userID, GroupsApplied: applied, Created: created}
-	if created {
-		if u.SendPasswordSetup {
-			if err := k.sendPasswordSetup(ctx, token, userID); err != nil {
-				res.PasswordSetupError = err.Error()
-			} else {
-				res.PasswordSetupEmailSent = true
-			}
-		}
-		if !res.PasswordSetupEmailSent {
-			res.TemporaryPassword, err = randomPassword(20)
-			if err != nil {
-				return IdPResult{}, err
-			}
-			if err := k.setTemporaryPassword(ctx, token, userID, res.TemporaryPassword); err != nil {
-				return IdPResult{}, err
-			}
+	if created && u.SendPasswordSetup {
+		if err := k.sendPasswordSetup(ctx, token, userID); err != nil {
+			res.PasswordSetupError = err.Error()
+		} else {
+			res.PasswordSetupEmailSent = true
 		}
 	}
 
@@ -183,8 +217,8 @@ func (k *KeycloakIdP) provisionOnce(ctx context.Context, u IdPUser) (IdPResult, 
 	return res, nil
 }
 
-// Keycloak user attributes HR writes. They must be declared in the realm's
-// user profile (see infra/keycloak/apply-mvp.sh), or Keycloak drops them.
+// Keycloak user attributes HR can write. HR writes only those listed in
+// KEYCLOAK_USER_ATTRIBUTES that the realm's user profile declares.
 const (
 	AttrHRPersonID   = "hrPersonId"
 	AttrNickname     = "nickname"
@@ -193,10 +227,57 @@ const (
 	AttrPrivateEmail = "privateEmail"
 )
 
+// allowedAttributes keeps the configured attributes the realm declares.
+func (k *KeycloakIdP) allowedAttributes(ctx context.Context, token string, attrs map[string]string) map[string]string {
+	declared := k.declaredAttributes(ctx, token)
+	out := map[string]string{}
+	for _, name := range k.cfg.Attributes {
+		v, ok := attrs[name]
+		if !ok {
+			continue
+		}
+		if declared != nil && !declared[name] {
+			continue
+		}
+		out[name] = v
+	}
+	return out
+}
+
+// declaredAttributes reads the realm's user profile (cached for ten
+// minutes); nil when it cannot be read.
+func (k *KeycloakIdP) declaredAttributes(ctx context.Context, token string) map[string]bool {
+	k.mu.Lock()
+	if time.Since(k.declaredAt) < 10*time.Minute {
+		d := k.declared
+		k.mu.Unlock()
+		return d
+	}
+	k.mu.Unlock()
+	var profile struct {
+		Attributes []struct {
+			Name string `json:"name"`
+		} `json:"attributes"`
+	}
+	var declared map[string]bool
+	if err := k.adminJSON(ctx, token, http.MethodGet, "/users/profile", nil, &profile); err == nil && len(profile.Attributes) > 0 {
+		declared = map[string]bool{}
+		for _, a := range profile.Attributes {
+			declared[a.Name] = true
+		}
+	} else if err != nil {
+		k.logger.Debug().Err(err).Msg("keycloak user profile not readable; writing the configured attributes")
+	}
+	k.mu.Lock()
+	k.declared, k.declaredAt = declared, time.Now()
+	k.mu.Unlock()
+	return declared
+}
+
 // linkedOrOwnedUser returns the account to update: the linked ExternalID if
-// it still exists, else an account with the username that belongs to this
-// person. "" means create a new one. A username owned by someone else is a
-// *UsernameTakenError.
+// it still exists, else an account with the username (or, in link mode, the
+// email) that belongs to this person. "" means none exists. A username owned
+// by someone else is a *UsernameTakenError.
 func (k *KeycloakIdP) linkedOrOwnedUser(ctx context.Context, token string, u IdPUser, username string) (string, error) {
 	if u.ExternalID != "" {
 		err := k.adminJSON(ctx, token, http.MethodGet, "/users/"+url.PathEscape(u.ExternalID), nil, nil)
@@ -207,9 +288,17 @@ func (k *KeycloakIdP) linkedOrOwnedUser(ctx context.Context, token string, u IdP
 			return "", err
 		}
 	}
-	existingID, err := k.findUserID(ctx, token, username)
-	if err != nil || existingID == "" {
+	existingID, err := k.findUserID(ctx, token, "username", username)
+	if err != nil {
 		return "", err
+	}
+	if existingID == "" && k.cfg.LinkOnly && u.Email != "" {
+		if existingID, err = k.findUserID(ctx, token, "email", u.Email); err != nil {
+			return "", err
+		}
+	}
+	if existingID == "" {
+		return "", nil
 	}
 	var rep struct {
 		Email      string              `json:"email"`
@@ -242,14 +331,31 @@ func attrValues(attrs map[string]string) map[string][]string {
 	return out
 }
 
-// DeleteAccount removes the user from the IdP.
+// ErrLinkOnly is returned for account changes link mode never makes.
+var ErrLinkOnly = errors.New("IDP_PROVISIONER_MODE=link: HR does not delete or rename accounts in this identity provider")
+
+// DeleteAccount removes the user from the IdP (manage mode only).
 func (k *KeycloakIdP) DeleteAccount(ctx context.Context, userID string) error {
+	if k.cfg.LinkOnly {
+		return ErrLinkOnly
+	}
 	return k.withFreshTokenRetry(func() error {
 		token, err := k.accessToken(ctx)
 		if err != nil {
 			return err
 		}
 		return asAccountError(k.adminJSON(ctx, token, http.MethodDelete, "/users/"+url.PathEscape(userID), nil, nil))
+	})
+}
+
+// SendPasswordSetup emails the user a new set-password link.
+func (k *KeycloakIdP) SendPasswordSetup(ctx context.Context, userID string) error {
+	return k.withFreshTokenRetry(func() error {
+		token, err := k.accessToken(ctx)
+		if err != nil {
+			return err
+		}
+		return asAccountError(k.sendPasswordSetup(ctx, token, userID))
 	})
 }
 
@@ -266,12 +372,25 @@ func (k *KeycloakIdP) sendPasswordSetup(ctx context.Context, token, userID strin
 	return k.adminJSON(ctx, token, http.MethodPut, path, []string{"UPDATE_PASSWORD"}, nil)
 }
 
-// EnsureGroups creates any missing top-level groups.
+// EnsureGroups creates any missing HR groups (manage mode; link mode only
+// checks that they exist).
 func (k *KeycloakIdP) EnsureGroups(ctx context.Context, names []string) error {
 	return k.withFreshTokenRetry(func() error { return k.ensureGroupsOnce(ctx, names) })
 }
 
-// ListGroups returns every realm group (flattened) with its direct members.
+// pageSize is how many users or groups HR asks Keycloak for at once.
+const pageSize = 100
+
+type kcGroup struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Path          string    `json:"path"`
+	SubGroupCount int       `json:"subGroupCount"`
+	SubGroups     []kcGroup `json:"subGroups"`
+}
+
+// ListGroups returns the realm's groups (flattened; only those under the
+// configured parent group) with all their direct members.
 func (k *KeycloakIdP) ListGroups(ctx context.Context) ([]GroupInfo, error) {
 	var out []GroupInfo
 	err := k.withFreshTokenRetry(func() error {
@@ -279,50 +398,149 @@ func (k *KeycloakIdP) ListGroups(ctx context.Context) ([]GroupInfo, error) {
 		if err != nil {
 			return err
 		}
-		type kcGroup struct {
-			ID        string    `json:"id"`
-			Name      string    `json:"name"`
-			Path      string    `json:"path"`
-			SubGroups []kcGroup `json:"subGroups"`
-		}
-		var top []kcGroup
-		if err := k.adminJSON(ctx, token, http.MethodGet, "/groups?briefRepresentation=false&max=1000", nil, &top); err != nil {
-			return err
-		}
 		out = out[:0]
+		var roots []kcGroup
+		if k.cfg.GroupParent != "" {
+			pid, err := k.groupIDByPath(ctx, token, k.cfg.GroupParent)
+			if err != nil || pid == "" {
+				return err
+			}
+			if roots, err = k.children(ctx, token, pid); err != nil {
+				return err
+			}
+		} else {
+			for first := 0; ; first += pageSize {
+				var page []kcGroup
+				if err := k.adminJSON(ctx, token, http.MethodGet, fmt.Sprintf("/groups?briefRepresentation=false&first=%d&max=%d", first, pageSize), nil, &page); err != nil {
+					return err
+				}
+				roots = append(roots, page...)
+				if len(page) < pageSize {
+					break
+				}
+			}
+		}
 		var walk func(gs []kcGroup) error
 		walk = func(gs []kcGroup) error {
 			for _, g := range gs {
-				var members []struct {
-					ID        string `json:"id"`
-					Username  string `json:"username"`
-					Email     string `json:"email"`
-					FirstName string `json:"firstName"`
-					LastName  string `json:"lastName"`
-					Enabled   bool   `json:"enabled"`
-				}
-				if err := k.adminJSON(ctx, token, http.MethodGet, "/groups/"+url.PathEscape(g.ID)+"/members?max=1000", nil, &members); err != nil {
+				members, err := k.members(ctx, token, g.ID)
+				if err != nil {
 					return err
 				}
-				info := GroupInfo{ID: g.ID, Name: g.Name, Path: g.Path, Members: make([]GroupMember, 0, len(members))}
-				for _, m := range members {
-					info.Members = append(info.Members, GroupMember{ID: m.ID, Username: m.Username, Email: m.Email,
-						FirstName: m.FirstName, LastName: m.LastName, Enabled: m.Enabled})
+				name := strings.TrimPrefix(g.Name, k.cfg.GroupPrefix)
+				out = append(out, GroupInfo{ID: g.ID, Name: name, Path: g.Path, Members: members})
+				subs := g.SubGroups
+				if len(subs) == 0 && g.SubGroupCount > 0 {
+					if subs, err = k.children(ctx, token, g.ID); err != nil {
+						return err
+					}
 				}
-				out = append(out, info)
-				if err := walk(g.SubGroups); err != nil {
+				if err := walk(subs); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		return walk(top)
+		return walk(roots)
 	})
 	return out, err
 }
 
-// UpdateMembership adds the user to `add` groups (creating missing ones) and
-// removes them from `remove` groups that exist.
+func (k *KeycloakIdP) children(ctx context.Context, token, groupID string) ([]kcGroup, error) {
+	var out []kcGroup
+	for first := 0; ; first += pageSize {
+		var page []kcGroup
+		path := fmt.Sprintf("/groups/%s/children?briefRepresentation=false&first=%d&max=%d", url.PathEscape(groupID), first, pageSize)
+		if err := k.adminJSON(ctx, token, http.MethodGet, path, nil, &page); err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
+		if len(page) < pageSize {
+			return out, nil
+		}
+	}
+}
+
+// members pages through every direct member of a group.
+func (k *KeycloakIdP) members(ctx context.Context, token, groupID string) ([]GroupMember, error) {
+	out := []GroupMember{}
+	for first := 0; ; first += pageSize {
+		var page []struct {
+			ID        string `json:"id"`
+			Username  string `json:"username"`
+			Email     string `json:"email"`
+			FirstName string `json:"firstName"`
+			LastName  string `json:"lastName"`
+			Enabled   bool   `json:"enabled"`
+		}
+		path := fmt.Sprintf("/groups/%s/members?first=%d&max=%d", url.PathEscape(groupID), first, pageSize)
+		if err := k.adminJSON(ctx, token, http.MethodGet, path, nil, &page); err != nil {
+			return nil, err
+		}
+		for _, m := range page {
+			out = append(out, GroupMember{ID: m.ID, Username: m.Username, Email: m.Email, FirstName: m.FirstName, LastName: m.LastName, Enabled: m.Enabled})
+		}
+		if len(page) < pageSize {
+			return out, nil
+		}
+	}
+}
+
+// ScanUsers calls fn for every account in the realm, page by page (review
+// queue: accounts without an hrPersonId).
+func (k *KeycloakIdP) ScanUsers(ctx context.Context, fn func(UserInfo) error) error {
+	token, err := k.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	for first := 0; ; first += pageSize {
+		var page []struct {
+			ID               string              `json:"id"`
+			Username         string              `json:"username"`
+			Email            string              `json:"email"`
+			EmailVerified    bool                `json:"emailVerified"`
+			FirstName        string              `json:"firstName"`
+			LastName         string              `json:"lastName"`
+			Enabled          bool                `json:"enabled"`
+			CreatedTimestamp int64               `json:"createdTimestamp"`
+			Attributes       map[string][]string `json:"attributes"`
+		}
+		path := fmt.Sprintf("/users?briefRepresentation=false&first=%d&max=%d", first, pageSize)
+		if err := k.adminJSON(ctx, token, http.MethodGet, path, nil, &page); err != nil {
+			if errors.Is(err, errUnauthorized) {
+				k.mu.Lock()
+				k.token = ""
+				k.mu.Unlock()
+			}
+			return err
+		}
+		for _, u := range page {
+			if strings.HasPrefix(u.Username, "service-account-") {
+				continue
+			}
+			info := UserInfo{ID: u.ID, Username: u.Username, Email: u.Email, EmailVerified: u.EmailVerified,
+				FirstName: u.FirstName, LastName: u.LastName, Enabled: u.Enabled, Attributes: map[string]string{}}
+			for key, v := range u.Attributes {
+				if len(v) > 0 {
+					info.Attributes[key] = v[0]
+				}
+			}
+			if u.CreatedTimestamp > 0 {
+				t := time.UnixMilli(u.CreatedTimestamp).UTC()
+				info.CreatedAt = &t
+			}
+			if err := fn(info); err != nil {
+				return err
+			}
+		}
+		if len(page) < pageSize {
+			return nil
+		}
+	}
+}
+
+// UpdateMembership adds the user to `add` groups (creating missing ones in
+// manage mode) and removes them from `remove` groups that exist.
 func (k *KeycloakIdP) UpdateMembership(ctx context.Context, userID string, add, remove []string) error {
 	return k.withFreshTokenRetry(func() error {
 		token, err := k.accessToken(ctx)
@@ -336,7 +554,7 @@ func (k *KeycloakIdP) UpdateMembership(ctx context.Context, userID string, add, 
 			return err
 		}
 		for _, name := range uniqueNonEmpty(remove) {
-			gid, err := k.groupID(ctx, token, name)
+			gid, err := k.groupIDByPath(ctx, token, k.GroupPath(name))
 			if err != nil {
 				return err
 			}
@@ -399,13 +617,27 @@ func (k *KeycloakIdP) SetEnabled(ctx context.Context, userID string, enabled boo
 }
 
 // UpdateProfile syncs email, names and attributes, and renames the login
-// when p.Username is set (needs editUsernameAllowed on the realm).
+// when p.Username is set (needs editUsernameAllowed on the realm). In link
+// mode only HR's own attribute changes.
 func (k *KeycloakIdP) UpdateProfile(ctx context.Context, userID string, p Profile) error {
-	changes := map[string]any{"email": p.Email, "firstName": p.FirstName, "lastName": p.LastName}
-	if u := strings.TrimSpace(p.Username); u != "" {
-		changes["username"] = u
-	}
-	return k.patchUser(ctx, userID, changes, p.Attributes)
+	return k.withFreshTokenRetry(func() error {
+		token, err := k.accessToken(ctx)
+		if err != nil {
+			return err
+		}
+		attrs := k.allowedAttributes(ctx, token, p.Attributes)
+		if k.cfg.LinkOnly {
+			if v, ok := attrs[AttrHRPersonID]; ok {
+				return k.patchUserOnce(ctx, token, userID, map[string]any{}, map[string]string{AttrHRPersonID: v})
+			}
+			return nil
+		}
+		changes := map[string]any{"email": p.Email, "firstName": p.FirstName, "lastName": p.LastName}
+		if u := strings.TrimSpace(p.Username); u != "" {
+			changes["username"] = u
+		}
+		return k.patchUserOnce(ctx, token, userID, changes, attrs)
+	})
 }
 
 // UsernameOwner looks the username up in the realm.
@@ -416,7 +648,7 @@ func (k *KeycloakIdP) UsernameOwner(ctx context.Context, username string) (strin
 		if err != nil {
 			return err
 		}
-		id, err := k.findUserID(ctx, token, username)
+		id, err := k.findUserID(ctx, token, "username", username)
 		if err != nil || id == "" {
 			return err
 		}
@@ -479,14 +711,8 @@ func (k *KeycloakIdP) ensureGroupsOnce(ctx context.Context, names []string) erro
 		return err
 	}
 	for _, name := range uniqueNonEmpty(names) {
-		gid, err := k.groupID(ctx, token, name)
-		if err != nil {
+		if _, err := k.resolveGroup(ctx, token, name); err != nil {
 			return err
-		}
-		if gid == "" {
-			if _, err := k.createGroup(ctx, token, name); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -536,9 +762,10 @@ func (k *KeycloakIdP) accessToken(ctx context.Context) (string, error) {
 	return k.token, nil
 }
 
-func (k *KeycloakIdP) findUserID(ctx context.Context, token, username string) (string, error) {
+// findUserID looks a user up by exact username or email.
+func (k *KeycloakIdP) findUserID(ctx context.Context, token, field, value string) (string, error) {
 	q := url.Values{}
-	q.Set("username", username)
+	q.Set(field, value)
 	q.Set("exact", "true")
 	var users []struct {
 		ID string `json:"id"`
@@ -546,7 +773,7 @@ func (k *KeycloakIdP) findUserID(ctx context.Context, token, username string) (s
 	if err := k.adminJSON(ctx, token, http.MethodGet, "/users?"+q.Encode(), nil, &users); err != nil {
 		return "", err
 	}
-	if len(users) == 0 {
+	if len(users) != 1 {
 		return "", nil
 	}
 	return users[0].ID, nil
@@ -564,35 +791,19 @@ func (k *KeycloakIdP) createUser(ctx context.Context, token string, payload map[
 	}
 	loc := res.Header.Get("Location")
 	if loc == "" {
-		// Fallback lookup by username.
 		username, _ := payload["username"].(string)
-		return k.findUserID(ctx, token, username)
+		return k.findUserID(ctx, token, "username", username)
 	}
 	parts := strings.Split(strings.TrimRight(loc, "/"), "/")
 	return parts[len(parts)-1], nil
 }
 
-func (k *KeycloakIdP) setTemporaryPassword(ctx context.Context, token, userID, password string) error {
-	body := map[string]any{
-		"type":      "password",
-		"value":     password,
-		"temporary": true,
-	}
-	return k.adminJSON(ctx, token, http.MethodPut, "/users/"+url.PathEscape(userID)+"/reset-password", body, nil)
-}
-
 func (k *KeycloakIdP) syncGroups(ctx context.Context, token, userID string, groups []string) ([]string, error) {
 	applied := make([]string, 0, len(groups))
 	for _, name := range uniqueNonEmpty(groups) {
-		gid, err := k.groupID(ctx, token, name)
+		gid, err := k.resolveGroup(ctx, token, name)
 		if err != nil {
 			return applied, err
-		}
-		if gid == "" {
-			gid, err = k.createGroup(ctx, token, name)
-			if err != nil {
-				return applied, err
-			}
 		}
 		path := "/users/" + url.PathEscape(userID) + "/groups/" + url.PathEscape(gid)
 		if err := k.adminJSON(ctx, token, http.MethodPut, path, map[string]any{}, nil); err != nil {
@@ -603,62 +814,91 @@ func (k *KeycloakIdP) syncGroups(ctx context.Context, token, userID string, grou
 	return applied, nil
 }
 
-func (k *KeycloakIdP) groupID(ctx context.Context, token, name string) (string, error) {
+// resolveGroup finds an HR group by its full path, creating it (and only
+// it) in manage mode. HR only passes groups it validated against the module
+// catalogs or its departments.
+func (k *KeycloakIdP) resolveGroup(ctx context.Context, token, name string) (string, error) {
+	path := k.GroupPath(name)
+	gid, err := k.groupIDByPath(ctx, token, path)
+	if err != nil || gid != "" {
+		return gid, err
+	}
+	if k.cfg.LinkOnly {
+		return "", fmt.Errorf("keycloak group %s does not exist; ask the identity provider's administrators to create it", path)
+	}
+	return k.createGroup(ctx, token, path)
+}
+
+// groupIDByPath looks a group up by its full path ("" when missing).
+func (k *KeycloakIdP) groupIDByPath(ctx context.Context, token, path string) (string, error) {
 	k.mu.Lock()
-	if id, ok := k.groupCache[name]; ok {
+	if id, ok := k.groupCache[path]; ok {
 		k.mu.Unlock()
 		return id, nil
 	}
 	k.mu.Unlock()
-
-	q := url.Values{}
-	q.Set("search", name)
-	q.Set("exact", "true")
-	var groups []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	for i := range segs {
+		segs[i] = url.PathEscape(segs[i])
 	}
-	if err := k.adminJSON(ctx, token, http.MethodGet, "/groups?"+q.Encode(), nil, &groups); err != nil {
+	var g struct {
+		ID string `json:"id"`
+	}
+	err := k.adminJSON(ctx, token, http.MethodGet, "/group-by-path/"+strings.Join(segs, "/"), nil, &g)
+	var ae *AdminError
+	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+		return "", nil
+	}
+	if err != nil {
 		return "", err
 	}
-	for _, g := range groups {
-		if g.Name == name {
-			k.mu.Lock()
-			k.groupCache[name] = g.ID
-			k.mu.Unlock()
-			return g.ID, nil
-		}
-	}
-	return "", nil
+	k.mu.Lock()
+	k.groupCache[path] = g.ID
+	k.mu.Unlock()
+	return g.ID, nil
 }
 
-// createGroup adds a top-level realm group. Module role catalogs name their
-// groups; the first provision for a new role creates it in Keycloak.
-func (k *KeycloakIdP) createGroup(ctx context.Context, token, name string) (string, error) {
-	res, err := k.adminRaw(ctx, token, http.MethodPost, "/groups", map[string]any{"name": name})
+// createGroup adds the group at path (its parent must exist).
+func (k *KeycloakIdP) createGroup(ctx context.Context, token, path string) (string, error) {
+	parentPath, name := "", strings.TrimPrefix(path, "/")
+	if i := strings.LastIndex(path, "/"); i > 0 {
+		parentPath, name = path[:i], path[i+1:]
+	}
+	endpoint := "/groups"
+	if parentPath != "" {
+		pid, err := k.groupIDByPath(ctx, token, parentPath)
+		if err != nil {
+			return "", err
+		}
+		if pid == "" {
+			return "", fmt.Errorf("keycloak parent group %s does not exist; create it or fix KEYCLOAK_GROUP_PARENT", parentPath)
+		}
+		endpoint = "/groups/" + url.PathEscape(pid) + "/children"
+	}
+	res, err := k.adminRaw(ctx, token, http.MethodPost, endpoint, map[string]any{"name": name})
 	if err != nil {
 		return "", err
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode != http.StatusCreated && res.StatusCode != http.StatusConflict {
-		return "", fmt.Errorf("keycloak create group %q: status %d: %s", name, res.StatusCode, truncate(string(body), 300))
+		return "", fmt.Errorf("keycloak create group %s: status %d: %s", path, res.StatusCode, truncate(string(body), 300))
 	}
 	if loc := res.Header.Get("Location"); loc != "" {
 		parts := strings.Split(strings.TrimRight(loc, "/"), "/")
 		id := parts[len(parts)-1]
 		k.mu.Lock()
-		k.groupCache[name] = id
+		k.groupCache[path] = id
 		k.mu.Unlock()
-		k.logger.Info().Str("group", name).Msg("keycloak group created")
+		k.logger.Info().Str("group", path).Msg("keycloak group created")
 		return id, nil
 	}
-	id, err := k.groupID(ctx, token, name)
+	id, err := k.groupIDByPath(ctx, token, path)
 	if err != nil {
 		return "", err
 	}
 	if id == "" {
-		return "", fmt.Errorf("keycloak group %q could not be created", name)
+		return "", fmt.Errorf("keycloak group %s could not be created", path)
 	}
 	return id, nil
 }
@@ -716,19 +956,6 @@ func splitDisplayName(name string) (first, last string) {
 		return parts[0], ""
 	}
 	return parts[0], strings.Join(parts[1:], " ")
-}
-
-func randomPassword(n int) (string, error) {
-	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$"
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	out := make([]byte, n)
-	for i := range b {
-		out[i] = alphabet[int(b[i])%len(alphabet)]
-	}
-	return string(out), nil
 }
 
 func uniqueNonEmpty(in []string) []string {

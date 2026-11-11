@@ -26,6 +26,7 @@ import (
 	httpx "github.com/AGlElectronics/hr/backend/internal/http"
 	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
+	"github.com/AGlElectronics/hr/backend/internal/service"
 	"github.com/AGlElectronics/hr/backend/internal/tlscert"
 )
 
@@ -68,6 +69,10 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			ClientSecret:     cfg.KeycloakClientSecret,
 			SetupClientID:    cfg.KeycloakSetupClientID,
 			SetupRedirectURI: cfg.KeycloakSetupRedirectURI,
+			LinkOnly:         cfg.ProvisionerMode == config.ProvisionerLink,
+			GroupParent:      cfg.KeycloakGroupParent,
+			GroupPrefix:      cfg.KeycloakGroupPrefix,
+			Attributes:       cfg.KeycloakUserAttributes,
 		}, logger)
 		if err != nil {
 			return fmt.Errorf("keycloak idp: %w", err)
@@ -125,6 +130,8 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		logger.Warn().Msg("LEARN_HOLDINGS_URL/LEARN_SERVICE_TOKEN not set — training requirements are not enforced")
 	}
 
+	jobs := service.NewJobQueue(pool, logger, false)
+	services := &httpx.Services{}
 	router := httpx.NewRouter(httpx.Deps{
 		RoleGate:     gate,
 		Config:       cfg,
@@ -134,7 +141,11 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		IdP:          idp,
 		Mailer:       mailer,
 		Den:          den,
+		Jobs:         jobs,
+		Services:     services,
 	}, Version)
+	go jobs.Run(ctx, cfg.JobInterval)
+	go services.Maintenance.Run(ctx, cfg.MaintenanceInterval)
 
 	server := &nethttp.Server{
 		Addr:              cfg.HTTPAddr,
