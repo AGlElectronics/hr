@@ -4,7 +4,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"sort"
 	"strconv"
@@ -13,15 +12,29 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/AGlElectronics/hr/backend/internal/clientip"
+	"github.com/AGlElectronics/hr/backend/internal/authbase"
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
+	"github.com/AGlElectronics/hr/backend/internal/groupmatch"
 	"github.com/AGlElectronics/hr/backend/internal/netguard"
 )
 
+// AuthMode selects how requests are authenticated (authbase): oidc verifies
+// a Bearer access token; dev trusts X-Dev-* headers and is only allowed with
+// APP_ENV=development.
+type AuthMode = authbase.AuthMode
+
 const (
-	AuthModeDev  = "dev"
-	AuthModeOIDC = "oidc"
+	AuthModeDev  = authbase.AuthDev
+	AuthModeOIDC = authbase.AuthOIDC
 )
+
+// DefaultAudience is OIDC_AUDIENCE when unset: the audience Keycloak adds to
+// access tokens for HR's API (token contract).
+const DefaultAudience = "hr-api"
+
+// MinServiceTokenLength is the shortest HR_SERVICE_TOKEN HR accepts; the
+// modules that check it refuse shorter ones too.
+const MinServiceTokenLength = 32
 
 // Provisioner modes (IDP_PROVISIONER_MODE).
 const (
@@ -44,11 +57,13 @@ var knownDevSecrets = []string{
 	"wiki-service-dev-token",
 	"tasks-service-dev-token",
 	"hr-directory-dev-token",
+	"dev-only-hr-service-token-change-me-0000000000",
 	"conservicesdev",
 	"change-me",
 }
 
 type Config struct {
+	// AppEnv defaults to production; only "development" relaxes rules.
 	AppEnv      string
 	AppBaseURL  string
 	HTTPAddr    string
@@ -62,7 +77,7 @@ type Config struct {
 	S3Region          string
 	S3UsePathStyle    bool
 
-	AuthMode       string
+	AuthMode       AuthMode
 	DevDefaultUser string
 
 	OIDCIssuerURL string
@@ -70,9 +85,16 @@ type Config struct {
 	OIDCAudience  string
 	// AdminGroups, ViewerGroups and LeadGroups are the IdP groups that grant
 	// the HR roles admin, viewer (read-only) and lead (department lead).
+	// They are compared with GroupMatch, never with ==.
 	AdminGroups  []string
 	ViewerGroups []string
 	LeadGroups   []string
+	// GroupMatch is OIDC_GROUPS_CLAIM, OIDC_GROUP_MATCH and OIDC_GROUP_PREFIX.
+	GroupMatch groupmatch.Config
+	// HRServiceToken is sent when HR fetches the role catalogs of other
+	// modules (HR_SERVICE_TOKEN), and accepted on HR's own catalog. Every
+	// module that checks it must have the same value.
+	HRServiceToken string
 
 	// ProvisionerMode is IDP_PROVISIONER_MODE: manage, link or off.
 	ProvisionerMode string
@@ -129,8 +151,7 @@ type Config struct {
 	// Empty turns the endpoint off.
 	DirectoryToken string
 	// GoogleWorkspaceCredentialsFile is the service-account key (JSON) the
-	// Google Workspace connector uses. HR 1.0.0 ships without the Workspace
-	// client, so the connector stays unavailable even when this is set.
+	// Google Workspace connector uses. Empty keeps the connector unavailable.
 	GoogleWorkspaceCredentialsFile string
 	// RoleGateInterval is how often pending role grants are re-checked.
 	RoleGateInterval time.Duration
@@ -144,21 +165,19 @@ type Config struct {
 	SMTPFrom     string
 	SMTPFromName string
 
-	// DenInternalURL replaces the host of pasted Den pairing URLs, for when
-	// Den is reachable under a different address from this backend (Docker).
-	DenInternalURL string
-	// DenMode is DEN_MODE: required keeps the API locked until the module
-	// is paired with Den; standalone (the default) does not.
-	DenMode denlink.Mode
+	// Den is the pairing configuration (DEN_MODE, DEN_INTERNAL_URL,
+	// DEN_ALLOWED_HOSTS, DEN_LINK_ENCRYPTION_KEY[_PREVIOUS], APP_ENV).
+	Den denlink.Config
 
 	// OutboundAllowedHosts are host names or CIDRs the address lookup may
 	// reach even though they are internal (e.g. a self-hosted Photon).
 	OutboundAllowedHosts []string
 
 	CORSAllowedOrigins []string
-	// TrustedProxyCIDRs lists the proxies whose X-Forwarded-For entries are
-	// believed when working out the client IP (TRUSTED_PROXY_CIDRS).
-	TrustedProxyCIDRs []netip.Prefix
+	// TrustedProxies are the proxies whose X-Forwarded-For entries are
+	// believed when working out the client IP (TRUSTED_PROXY_CIDRS). The
+	// zero value trusts none.
+	TrustedProxies authbase.TrustedProxies
 
 	ShutdownTimeout time.Duration
 }
@@ -166,8 +185,22 @@ type Config struct {
 func Load() (*Config, error) {
 	_ = godotenv.Load()
 
+	var errs []string
+	auth, err := authbase.FromEnv(os.Getenv)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	groups, err := groupmatch.FromEnv(os.Getenv)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	den, err := denlink.FromEnv("hr", "", os.Getenv)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+
 	cfg := &Config{
-		AppEnv:                         getEnv("APP_ENV", "development"),
+		AppEnv:                         auth.AppEnv,
 		AppBaseURL:                     getEnv("APP_BASE_URL", "http://localhost:8080"),
 		HTTPAddr:                       getEnv("HTTP_ADDR", ":8080"),
 		DatabaseURL:                    getEnv("DATABASE_URL", ""),
@@ -177,14 +210,16 @@ func Load() (*Config, error) {
 		S3SecretAccessKey:              getEnv("S3_SECRET_ACCESS_KEY", ""),
 		S3Region:                       getEnv("S3_REGION", "us-east-1"),
 		S3UsePathStyle:                 getEnvBool("S3_USE_PATH_STYLE", true),
-		AuthMode:                       strings.ToLower(getEnv("AUTH_MODE", AuthModeDev)),
+		AuthMode:                       auth.AuthMode,
 		DevDefaultUser:                 getEnv("DEV_DEFAULT_USER", "dev-hr-admin"),
 		OIDCIssuerURL:                  getEnv("OIDC_ISSUER_URL", ""),
 		OIDCClientID:                   getEnv("OIDC_CLIENT_ID", ""),
-		OIDCAudience:                   getEnv("OIDC_AUDIENCE", ""),
+		OIDCAudience:                   getEnv("OIDC_AUDIENCE", DefaultAudience),
 		AdminGroups:                    splitCSV(getEnv("HR_ADMIN_GROUPS", "hr-admin")),
 		ViewerGroups:                   splitCSV(getEnv("HR_VIEWER_GROUPS", "hr-viewer")),
 		LeadGroups:                     splitCSV(getEnv("HR_LEAD_GROUPS", "hr-lead")),
+		GroupMatch:                     groups,
+		HRServiceToken:                 strings.TrimSpace(getEnv("HR_SERVICE_TOKEN", "")),
 		ProvisionerMode:                strings.ToLower(getEnv("IDP_PROVISIONER_MODE", ProvisionerManage)),
 		KeycloakBaseURL:                getEnv("KEYCLOAK_BASE_URL", ""),
 		KeycloakRealm:                  getEnv("KEYCLOAK_REALM", "conservices"),
@@ -214,38 +249,29 @@ func Load() (*Config, error) {
 		SMTPPassword:                   getEnv("SMTP_PASSWORD", ""),
 		SMTPFrom:                       getEnv("SMTP_FROM", ""),
 		SMTPFromName:                   getEnv("SMTP_FROM_NAME", ""),
-		DenInternalURL:                 getEnv("DEN_INTERNAL_URL", ""),
-		DenMode:                        denlink.Mode(getEnv("DEN_MODE", string(denlink.ModeStandalone))),
+		Den:                            den,
 		OutboundAllowedHosts:           splitCSV(getEnv("OUTBOUND_ALLOWED_HOSTS", "")),
 		CORSAllowedOrigins:             splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3003")),
+		TrustedProxies:                 auth.TrustedProxies,
 		ShutdownTimeout:                getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 	}
 
-	trusted, err := clientip.ParseCIDRs(getEnv("TRUSTED_PROXY_CIDRS", clientip.DefaultTrustedProxies))
-	if err != nil {
-		return nil, fmt.Errorf("invalid config: TRUSTED_PROXY_CIDRS: %w", err)
-	}
-	cfg.TrustedProxyCIDRs = trusted
-
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(errs); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-func (c *Config) validate() error {
-	var errs []string
+// validate adds the HR-specific checks to errs (from the shared packages'
+// FromEnv) and returns them all at once.
+func (c *Config) validate(errs []string) error {
 	if c.DatabaseURL == "" {
 		errs = append(errs, "DATABASE_URL is required")
 	}
-	if err := c.DenMode.Validate(); err != nil {
-		errs = append(errs, err.Error())
+	if c.HRServiceToken != "" && len(c.HRServiceToken) < MinServiceTokenLength {
+		errs = append(errs, fmt.Sprintf("HR_SERVICE_TOKEN must be at least %d characters (openssl rand -hex 32)", MinServiceTokenLength))
 	}
-	switch c.AuthMode {
-	case AuthModeDev, AuthModeOIDC:
-	default:
-		errs = append(errs, "AUTH_MODE must be 'dev' or 'oidc'")
-	}
+	// AUTH_MODE=dev outside development is refused by authbase.FromEnv.
 	if c.AuthMode == AuthModeOIDC {
 		if c.OIDCIssuerURL == "" {
 			errs = append(errs, "OIDC_ISSUER_URL is required when AUTH_MODE=oidc")
@@ -303,7 +329,31 @@ func (c *Config) validate() error {
 }
 
 // IsDevelopment reports APP_ENV=development.
-func (c *Config) IsDevelopment() bool { return c.AppEnv == "development" }
+func (c *Config) IsDevelopment() bool { return c.Auth().Development() }
+
+// Auth is the authbase view of AUTH_MODE, APP_ENV and TRUSTED_PROXY_CIDRS.
+func (c *Config) Auth() authbase.Config {
+	return authbase.Config{AppEnv: c.AppEnv, AuthMode: c.AuthMode, TrustedProxies: c.TrustedProxies}
+}
+
+// Audience is the audience access tokens must carry.
+func (c *Config) Audience() string {
+	if c.OIDCAudience != "" {
+		return c.OIDCAudience
+	}
+	return DefaultAudience
+}
+
+// DenConfig is Den with the slug and version filled in, and APP_ENV taken
+// from the process when Den does not set its own.
+func (c *Config) DenConfig(version string) denlink.Config {
+	d := c.Den
+	d.Slug, d.Version = "hr", version
+	if d.AppEnv == "" {
+		d.AppEnv = c.AppEnv
+	}
+	return d
+}
 
 // devSecretsInUse lists every secret-bearing variable that holds a known
 // development value.
@@ -312,6 +362,7 @@ func (c *Config) devSecretsInUse() []string {
 		"KEYCLOAK_CLIENT_SECRET": c.KeycloakClientSecret,
 		"LEARN_SERVICE_TOKEN":    c.LearnServiceToken,
 		"HR_DIRECTORY_TOKEN":     c.DirectoryToken,
+		"HR_SERVICE_TOKEN":       c.HRServiceToken,
 		"SMTP_PASSWORD":          c.SMTPPassword,
 		"S3_SECRET_ACCESS_KEY":   c.S3SecretAccessKey,
 	}

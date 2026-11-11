@@ -758,7 +758,7 @@ func (s *LifecycleService) ResendPasswordSetup(ctx context.Context, actor string
 // Offboard deletes the person's account, emails them that it was deleted,
 // and deletes them from HR: profile, onboardings and the audit entries
 // about their profile. The access history (AccessHistoryActions) and the
-// offboarding line stay for Retention.OffboardedAuditMonths, then the
+// offboarding line stay for Retention.OffboardedAuditDays, then the
 // maintenance job purges them.
 func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID uuid.UUID, in OffboardInput) (*OffboardResult, error) {
 	in.Reason = strings.TrimSpace(in.Reason)
@@ -812,7 +812,7 @@ func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID 
 	if err != nil {
 		return nil, err
 	}
-	keepMonths := settings.Retention.OffboardedAuditMonths
+	keepDays := settings.Retention.OffboardedAuditDays
 	if err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		// Profile changes go with the person; the access history (who
 		// granted or removed what, when) stays until its purge date.
@@ -823,8 +823,8 @@ DELETE FROM audit_events
 			return httperror.Internal(err)
 		}
 		if _, err := tx.Exec(ctx, `
-UPDATE audit_events SET purge_after = now() + make_interval(months => $2)
- WHERE entity_id = $1 OR entity_id IN (SELECT id FROM employment_drafts WHERE person_id = $1)`, personID, keepMonths); err != nil {
+UPDATE audit_events SET purge_after = now() + make_interval(days => $2)
+ WHERE entity_id = $1 OR entity_id IN (SELECT id FROM employment_drafts WHERE person_id = $1)`, personID, keepDays); err != nil {
 			return httperror.Internal(err)
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM employment_drafts WHERE person_id = $1`, personID); err != nil {
@@ -841,8 +841,8 @@ UPDATE audit_events SET purge_after = now() + make_interval(months => $2)
 		return nil, err
 	}
 	if _, err := s.pool.Exec(ctx, `
-UPDATE audit_events SET purge_after = now() + make_interval(months => $2) WHERE entity_id = $1 AND purge_after IS NULL`,
-		personID, keepMonths); err != nil {
+UPDATE audit_events SET purge_after = now() + make_interval(days => $2) WHERE entity_id = $1 AND purge_after IS NULL`,
+		personID, keepDays); err != nil {
 		return nil, httperror.Internal(err)
 	}
 	if s.workspace != nil {

@@ -18,8 +18,8 @@ import (
 const retentionActor = "system:retention"
 
 // RetentionService applies the retention rules: applicants untouched for
-// Retention.ApplicantMonths are deleted, people paused for
-// Retention.PausedMonths are offboarded. HR admins are emailed
+// Retention.ApplicantDays are deleted, people paused for
+// Retention.PausedDays are offboarded. HR admins are emailed
 // Retention.WarningDays before; without a delivered warning nothing is
 // purged.
 type RetentionService struct {
@@ -55,14 +55,14 @@ func (s *RetentionService) Candidates(ctx context.Context) ([]RetentionCandidate
 	rows, err := s.pool.Query(ctx, `
 SELECT id, display_name, status, due, retention_warned_at FROM (
   SELECT id, display_name, status, retention_warned_at,
-         CASE WHEN status = 'applicant' THEN updated_at + make_interval(months => $1)
-              ELSE COALESCE(paused_at, updated_at) + make_interval(months => $2) END AS due
+         CASE WHEN status = 'applicant' THEN updated_at + make_interval(days => $1)
+              ELSE COALESCE(paused_at, updated_at) + make_interval(days => $2) END AS due
     FROM people
    WHERE status = 'applicant'
       OR status = 'paused'
 ) c
  WHERE due - make_interval(days => $3) <= $4
- ORDER BY due`, r.ApplicantMonths, r.PausedMonths, r.WarningDays, s.now())
+ ORDER BY due`, r.ApplicantDays, r.PausedDays, r.WarningDays, s.now())
 	if err != nil {
 		return nil, r, err
 	}
@@ -123,7 +123,7 @@ func (s *RetentionService) Run(ctx context.Context) error {
 func (s *RetentionService) purge(ctx context.Context, c RetentionCandidate, r RetentionSettings) error {
 	if c.Status == "paused" {
 		_, err := s.lifecycle.Offboard(ctx, retentionActor, c.PersonID, OffboardInput{
-			Reason: fmt.Sprintf("Paused for more than %d months (retention period)", r.PausedMonths),
+			Reason: fmt.Sprintf("Paused for more than %d days (retention period)", r.PausedDays),
 		})
 		return err
 	}
@@ -145,12 +145,12 @@ DELETE FROM audit_events WHERE entity_id = $1 OR entity_id IN (SELECT id FROM em
 		return err
 	}
 	if err := s.audit.Record(ctx, retentionActor, "person.retention_purge", "person", c.PersonID, map[string]any{
-		"username": username, "reason": fmt.Sprintf("applicant untouched for %d months", r.ApplicantMonths),
+		"username": username, "reason": fmt.Sprintf("applicant untouched for %d days", r.ApplicantDays),
 	}); err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE audit_events SET purge_after = now() + make_interval(months => $2) WHERE entity_id = $1`,
-		c.PersonID, r.OffboardedAuditMonths)
+	_, err := s.pool.Exec(ctx, `UPDATE audit_events SET purge_after = now() + make_interval(days => $2) WHERE entity_id = $1`,
+		c.PersonID, r.OffboardedAuditDays)
 	return err
 }
 
@@ -164,7 +164,7 @@ func retentionWarning(cs []RetentionCandidate, r RetentionSettings) string {
 		}
 		fmt.Fprintf(&b, "  %s: %s on or after %s\n", c.DisplayName, what, c.DueAt.Format("2 January 2006"))
 	}
-	fmt.Fprintf(&b, "\nThe rules: applicants untouched for %d months, people paused for %d months.\n", r.ApplicantMonths, r.PausedMonths)
+	fmt.Fprintf(&b, "\nThe rules: applicants untouched for %d days, people paused for %d days.\n", r.ApplicantDays, r.PausedDays)
 	fmt.Fprintf(&b, "To keep someone, open them in HR and update or reactivate them before then. Nothing is removed until %d days after this email.\n", r.WarningDays)
 	return b.String()
 }

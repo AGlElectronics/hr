@@ -3,9 +3,9 @@ package http
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/AGlElectronics/hr/backend/internal/authz"
+	"github.com/AGlElectronics/hr/backend/internal/groupmatch"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
 	"github.com/AGlElectronics/hr/backend/internal/service"
@@ -88,27 +88,28 @@ func (h *miscHandler) idpGroups(w http.ResponseWriter, r *http.Request) {
 	if h.relevantGroups != nil {
 		relevant = h.relevantGroups(r.Context())
 	}
+	norm := groupmatch.Normalize
 	for _, d := range depts {
-		relevant[d.GroupName], relevant[d.LeadGroup] = true, true
+		relevant[norm(d.GroupName)], relevant[norm(d.LeadGroup)] = true, true
 		for _, role := range d.DefaultRoles {
-			relevant[role.GroupName] = true
+			relevant[norm(role.GroupName)] = true
 		}
 	}
 	out := make([]idpGroupView, 0, len(groups))
 	for _, g := range groups {
-		if !relevant[g.Name] && !relevant[strings.TrimPrefix(g.Path, "/")] {
+		if !relevant[norm(g.Name)] && !relevant[norm(g.Path)] {
 			continue
 		}
 		v := idpGroupView{GroupInfo: g}
 		for _, d := range depts {
-			if d.GroupName == g.Name || d.LeadGroup == g.Name {
+			if norm(d.GroupName) == norm(g.Name) || norm(d.LeadGroup) == norm(g.Name) {
 				v.Department = &struct {
 					ID   string `json:"id"`
 					Name string `json:"name"`
 				}{ID: d.ID.String(), Name: d.Name}
 			}
 			for _, role := range d.DefaultRoles {
-				if role.GroupName == g.Name {
+				if norm(role.GroupName) == norm(g.Name) {
 					v.DefaultFor = append(v.DefaultFor, d.Name)
 				}
 			}

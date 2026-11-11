@@ -9,23 +9,6 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/config"
 )
 
-func TestInAnyGroup(t *testing.T) {
-	cases := []struct {
-		have, want []string
-		ok         bool
-	}{
-		{[]string{"/hr-admin"}, []string{"hr-admin"}, true},
-		{[]string{"HR-Admin"}, []string{"hr-admin"}, true},
-		{[]string{"stash-volunteer", "dept-ops"}, []string{"hr-admin"}, false},
-		{nil, []string{"hr-admin"}, false},
-	}
-	for _, c := range cases {
-		if got := inAnyGroup(c.have, c.want); got != c.ok {
-			t.Errorf("inAnyGroup(%v, %v) = %v, want %v", c.have, c.want, got, c.ok)
-		}
-	}
-}
-
 func TestRolesFor(t *testing.T) {
 	cfg := &config.Config{AdminGroups: []string{"hr-admin"}, ViewerGroups: []string{"hr-viewer"}, LeadGroups: []string{"/org/hr-lead"}}
 	got := RolesFor(cfg, []string{"/hr-viewer", "org/hr-lead", "stash-volunteer"})

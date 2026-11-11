@@ -3,12 +3,12 @@ package http
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/AGlElectronics/hr/backend/internal/authbase"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
 )
 
@@ -21,16 +21,16 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// decodeJSON reads one JSON value of at most authbase.DefaultMaxBodyBytes
+// (1 MiB), refusing unknown fields; failures map to 400 bad_request or 413
+// request_too_large.
 func decodeJSON(r *http.Request, dst any) error {
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		if errors.Is(err, io.EOF) {
-			return httperror.BadRequest("request body is empty")
-		}
-		return httperror.BadRequest("invalid JSON: " + err.Error())
+	err := authbase.DecodeJSON(nil, r, dst, authbase.DecodeOptions{MaxBytes: authbase.DefaultMaxBodyBytes, DisallowUnknownFields: true})
+	var de *authbase.DecodeError
+	if errors.As(err, &de) {
+		return httperror.New(httperror.Code(de.Code), de.Message).WithCause(err)
 	}
-	return nil
+	return err
 }
 
 func parseUUIDParam(r *http.Request, name string) (uuid.UUID, error) {

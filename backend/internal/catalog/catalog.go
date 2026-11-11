@@ -1,22 +1,25 @@
 // Package catalog fetches role catalogs from every Con Services module.
 //
-// Contract: each module serves a public `GET /api/role-catalog` returning
+// Contract (docs/concepts/role-catalog.md): each module serves
+// `GET /api/role-catalog` to HR's service token or a staff sign-in,
+// returning
 //
-//	{"module","display_name","description","roles":[{"key","label",
-//	  "description","group","assignable","privileged","default","scope",
-//	  "permissions","note"}]}
+//	{"module","display_name","description","revision","roles":[{"key",
+//	  "label","description","group","group_display","assignable",
+//	  "privileged","dynamic","default","scope","permissions","note"}]}
 //
-// HR assigns roles by adding the person to the role's IdP `group`. Which
-// modules exist comes from Den's paired-module list (the "modules" section
-// of the integration bundle), or from ROLE_CATALOG_SOURCES when set. The
-// last catalog of each module is cached, so roles stay assignable and
+// with the revision also as the ETag. HR assigns roles by adding the person
+// to the role's IdP group. Which modules exist comes from
+// ROLE_CATALOG_SOURCES (Discover is the hook for Den's paired-module list).
+// The last catalog of each module is cached, so roles stay assignable and
 // visible while a module is offline.
 package catalog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,31 +27,49 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/AGlElectronics/hr/backend/internal/authz"
+	"github.com/AGlElectronics/hr/backend/internal/groupmatch"
 )
 
 // Role is one entry in a module's catalog.
 type Role struct {
-	Key         string   `json:"key"`
-	Label       string   `json:"label"`
-	Description string   `json:"description"`
-	Group       string   `json:"group"`
-	Assignable  bool     `json:"assignable"`
-	Scope       string   `json:"scope"`
-	Permissions []string `json:"permissions"`
-	Note        string   `json:"note,omitempty"`
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	// Group is the normalised form, used for comparisons; GroupDisplay the
+	// group as the module's admin typed it, used when talking to the IdP.
+	Group        string   `json:"group"`
+	GroupDisplay string   `json:"group_display,omitempty"`
+	Assignable   bool     `json:"assignable"`
+	Scope        string   `json:"scope"`
+	Permissions  []string `json:"permissions"`
+	Note         string   `json:"note,omitempty"`
 	// Default roles are ticked for every new onboarding; HR can untick them.
 	Default bool `json:"default,omitempty"`
-	// Privileged roles (administration of a module) may only be assigned
-	// by HR users with the "assign admin roles" permission.
-	Privileged bool `json:"privileged,omitempty"`
+	// Privileged roles (an admin-type role: settings, other people's data
+	// or granting access) may only be assigned by HR users with the
+	// "assign admin roles" permission.
+	Privileged bool `json:"privileged"`
+	// Dynamic roles exist because of something created at run time (a
+	// Desk mailbox) and disappear with it.
+	Dynamic bool `json:"dynamic"`
+}
+
+// IdPGroup is the group name HR adds people to: GroupDisplay, else Group.
+// The IdP may look groups up case-sensitively, so the normalised form
+// could name a different (new) group.
+func (r Role) IdPGroup() string {
+	if r.GroupDisplay != "" {
+		return r.GroupDisplay
+	}
+	return r.Group
 }
 
 // AdminType reports whether the role administers its module: flagged
-// privileged, or named "admin" / "*-admin" (by key or group).
+// privileged, or (catalogs from before the 1.0 contract, which have no
+// privileged field) named "admin" / "*-admin" by key or group.
 func (r Role) AdminType() bool {
 	return r.Privileged || r.Key == "admin" || strings.HasSuffix(r.Key, "-admin") || strings.HasSuffix(r.Group, "-admin")
 }
@@ -65,10 +86,14 @@ type Module struct {
 	Module      string `json:"module"`
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
-	Roles       []Role `json:"roles"`
-	Source      string `json:"source"`
-	Status      string `json:"status"` // ok | cached | error
-	Error       string `json:"error,omitempty"`
+	// Revision changes whenever the module's list changes.
+	Revision string `json:"revision,omitempty"`
+	// ETag is the module's ETag header, sent back as If-None-Match.
+	ETag   string `json:"etag,omitempty"`
+	Roles  []Role `json:"roles"`
+	Source string `json:"source"`
+	Status string `json:"status"` // ok | cached | error
+	Error  string `json:"error,omitempty"`
 	// FetchedAt is when the catalog was last fetched (cached modules).
 	FetchedAt *time.Time `json:"fetched_at,omitempty"`
 }
@@ -103,43 +128,47 @@ func ParseSources(raw string) []Source {
 }
 
 // Self is HR's own role catalog. The groups are the first entries of
-// HR_ADMIN_GROUPS, HR_VIEWER_GROUPS and HR_LEAD_GROUPS.
+// HR_ADMIN_GROUPS, HR_VIEWER_GROUPS and HR_LEAD_GROUPS. Every HR role sees
+// other people's data, so all three are privileged.
 func Self(adminGroup, viewerGroup, leadGroup string) Module {
-	return Module{
+	role := func(key, label, desc, group, scope string, perms []string) Role {
+		g := groupmatch.NewGrant(group)
+		return Role{Key: key, Label: label, Description: desc, Group: g.Stored, GroupDisplay: g.Display,
+			Assignable: true, Privileged: true, Scope: scope, Permissions: perms}
+	}
+	lead := role("lead", "Department lead", "Onboard people, change their access, pause them and review new volunteers, "+
+		"only in the departments they lead.", leadGroup, "department", authz.PermissionsFor(authz.RoleLead))
+	lead.Note = "Put the person on a department's lead list in HR (Departments); HR then gives them this group and the department's lead group."
+	m := Module{
 		Module:      "hr",
 		DisplayName: "HR",
 		Description: "Onboarding, people and access.",
 		Source:      "self",
 		Status:      StatusOK,
-		Roles: []Role{{
-			Key:         "admin",
-			Label:       "HR admin",
-			Description: "Everything in HR: onboard and offboard people, departments, access groups, settings, audit log.",
-			Group:       adminGroup,
-			Assignable:  true,
-			Privileged:  true,
-			Scope:       "organization",
-			Permissions: authz.PermissionsFor(authz.RoleAdmin),
-		}, {
-			Key:         "viewer",
-			Label:       "HR viewer",
-			Description: "Read-only access to people, departments and the audit log.",
-			Group:       viewerGroup,
-			Assignable:  true,
-			Scope:       "organization",
-			Permissions: authz.PermissionsFor(authz.RoleViewer),
-		}, {
-			Key:   "lead",
-			Label: "Department lead",
-			Description: "Onboard people, change their access, pause them and review new volunteers, " +
-				"only in the departments whose lead list includes them.",
-			Group:       leadGroup,
-			Assignable:  true,
-			Scope:       "department",
-			Permissions: authz.PermissionsFor(authz.RoleLead),
-			Note:        "Put the person on a department's lead list in HR (Departments); HR then gives them this group.",
-		}},
+		Roles: []Role{
+			role("admin", "HR admin", "Everything in HR: onboard and offboard people, departments, access groups, settings, audit log.",
+				adminGroup, "organization", authz.PermissionsFor(authz.RoleAdmin)),
+			role("viewer", "HR viewer", "Read-only access to people, departments and the audit log.",
+				viewerGroup, "organization", authz.PermissionsFor(authz.RoleViewer)),
+			lead,
+		},
 	}
+	m.Revision = Revision(m.Roles)
+	return m
+}
+
+// Revision is a short hash of roles: it changes whenever the list does.
+func Revision(roles []Role) string {
+	raw, _ := json.Marshal(roles)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:8])
+}
+
+// Body is a catalog as served at GET /api/role-catalog (without HR's
+// fetch bookkeeping).
+func (m Module) Body() map[string]any {
+	return map[string]any{"module": m.Module, "display_name": m.DisplayName, "description": m.Description,
+		"revision": m.Revision, "roles": m.Roles}
 }
 
 // Cache stores the last catalog of each module.
@@ -150,12 +179,17 @@ type Cache interface {
 
 // Fetcher fetches all catalogs in parallel.
 type Fetcher struct {
-	// Sources override discovery (ROLE_CATALOG_SOURCES).
+	// Sources is ROLE_CATALOG_SOURCES: replaces a discovered URL for the
+	// same slug and adds slugs Den does not know. Alone when Discover is
+	// unset (standalone, or Den has no modules call yet).
 	Sources []Source
-	// Discover lists the paired modules (from Den) when Sources is empty.
+	// Discover lists the modules paired in Den (GET
+	// /api/v1/integrations/modules). Nil until denlink can make that call.
 	Discover func(ctx context.Context) []Source
 	Cache    Cache
 	Client   *http.Client
+	// Token is HR_SERVICE_TOKEN, sent as a Bearer token to every module.
+	Token string
 	// Self is HR's own catalog, listed first.
 	Self Module
 	// TTL reuses the last FetchAll result for this long (0: always fetch).
@@ -166,14 +200,40 @@ type Fetcher struct {
 	lastAt time.Time
 }
 
+// sources is Den's paired-module list, with ROLE_CATALOG_SOURCES applied on
+// top: a listed slug replaces the URL Den reported, and a slug Den does not
+// know is added. With nothing discovered (standalone, or Den has no modules
+// call yet) the override list is the whole set.
 func (f *Fetcher) sources(ctx context.Context) []Source {
-	if len(f.Sources) > 0 {
+	var discovered []Source
+	if f.Discover != nil {
+		discovered = f.Discover(ctx)
+	}
+	if len(f.Sources) == 0 {
+		return discovered
+	}
+	if len(discovered) == 0 {
 		return f.Sources
 	}
-	if f.Discover != nil {
-		return f.Discover(ctx)
+	by := map[string]Source{}
+	var order []string
+	add := func(s Source) {
+		if _, ok := by[s.Slug]; !ok {
+			order = append(order, s.Slug)
+		}
+		by[s.Slug] = s
 	}
-	return nil
+	for _, s := range discovered {
+		add(s)
+	}
+	for _, s := range f.Sources {
+		add(s)
+	}
+	out := make([]Source, 0, len(order))
+	for _, slug := range order {
+		out = append(out, by[slug])
+	}
+	return out
 }
 
 // FetchAll returns HR's own catalog followed by each module (ok, cached or
@@ -193,18 +253,25 @@ func (f *Fetcher) FetchAll(ctx context.Context) []Module {
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
 	srcs := f.sources(ctx)
+	cached := map[string]Module{}
+	if f.Cache != nil {
+		cached, _ = f.Cache.Load(ctx)
+	}
 	out := make([]Module, len(srcs))
 	var wg sync.WaitGroup
 	for i, src := range srcs {
 		wg.Add(1)
 		go func(i int, src Source) {
 			defer wg.Done()
-			out[i] = fetchOne(ctx, client, src)
+			var prev *Module
+			if c, ok := cached[src.Slug]; ok && c.Source == src.URL {
+				prev = &c
+			}
+			out[i] = fetchOne(ctx, client, src, f.Token, prev)
 		}(i, src)
 	}
 	wg.Wait()
 	if f.Cache != nil {
-		cached, _ := f.Cache.Load(ctx)
 		for i := range out {
 			if out[i].Status == StatusOK {
 				_ = f.Cache.Save(ctx, out[i])
@@ -296,18 +363,21 @@ func (ix *Index) Lookup(key string) (Role, RoleState) {
 	return Role{}, RoleUnknownModule
 }
 
-// Groups lists every group of the indexed roles.
+// Groups lists every group of the indexed roles, normalised.
 func (ix *Index) Groups() map[string]bool {
 	out := map[string]bool{}
 	for _, r := range ix.roles {
-		if r.Group != "" {
-			out[r.Group] = true
+		if g := groupmatch.Normalize(r.Group); g != "" {
+			out[g] = true
 		}
 	}
 	return out
 }
 
-func fetchOne(ctx context.Context, client *http.Client, src Source) Module {
+// fetchOne reads one module's catalog with HR's service token. prev is the
+// cached catalog from the same URL: its ETag is sent as If-None-Match, and a
+// 304 reuses it.
+func fetchOne(ctx context.Context, client *http.Client, src Source, token string, prev *Module) Module {
 	fail := func(err error) Module {
 		return Module{Module: src.Slug, DisplayName: src.Slug, Source: src.URL, Status: StatusError, Error: err.Error(), Roles: []Role{}}
 	}
@@ -316,13 +386,32 @@ func fetchOne(ctx context.Context, client *http.Client, src Source) Module {
 		return fail(err)
 	}
 	req.Header.Set("Accept", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if prev != nil {
+		if tag := prev.ETag; tag != "" {
+			req.Header.Set("If-None-Match", tag)
+		} else if prev.Revision != "" {
+			req.Header.Set("If-None-Match", `"`+prev.Revision+`"`)
+		}
+	}
 	res, err := client.Do(req)
 	if err != nil {
 		return fail(err)
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	now := time.Now().UTC()
+	if res.StatusCode == http.StatusNotModified && prev != nil {
+		m := *prev
+		m.Source, m.Status, m.Error, m.FetchedAt = src.URL, StatusOK, "", &now
+		return m
+	}
 	if res.StatusCode != http.StatusOK {
+		if res.StatusCode == http.StatusUnauthorized {
+			return fail(fmt.Errorf("status 401: the module refused HR_SERVICE_TOKEN (missing or different)"))
+		}
 		return fail(fmt.Errorf("status %d", res.StatusCode))
 	}
 	var m Module
@@ -337,7 +426,14 @@ func fetchOne(ctx context.Context, client *http.Client, src Source) Module {
 	if m.Roles == nil {
 		m.Roles = []Role{}
 	}
-	now := time.Now().UTC()
+	for i := range m.Roles {
+		r := &m.Roles[i]
+		if r.GroupDisplay == "" {
+			r.GroupDisplay = r.Group
+		}
+		r.Group = groupmatch.Normalize(r.Group)
+	}
+	m.ETag = res.Header.Get("ETag")
 	m.Source, m.Status, m.Error, m.FetchedAt = src.URL, StatusOK, "", &now
 	return m
 }
@@ -386,54 +482,4 @@ func (c *PGCache) Save(ctx context.Context, m Module) error {
 INSERT INTO catalog_cache (module, payload, source, fetched_at) VALUES ($1, $2, $3, now())
 ON CONFLICT (module) DO UPDATE SET payload = EXCLUDED.payload, source = EXCLUDED.source, fetched_at = now()`, m.Module, raw, m.Source)
 	return err
-}
-
-// DenModule is one entry of the "modules" section Den sends in the
-// integration bundle: a module paired with Den.
-type DenModule struct {
-	Slug           string `json:"slug"`
-	RoleCatalogURL string `json:"role_catalog_url"`
-	// InternalURL is the module backend's in-cluster address; the catalog
-	// is then <internal_url>/api/role-catalog.
-	InternalURL string `json:"internal_url"`
-}
-
-// DenSources reads the paired modules from the bundle denlink stores in
-// den_link (nothing while HR is standalone).
-func DenSources(pool *pgxpool.Pool) func(ctx context.Context) []Source {
-	return func(ctx context.Context) []Source {
-		if pool == nil {
-			return nil
-		}
-		var raw []byte
-		err := pool.QueryRow(ctx, `SELECT bundle->'modules' FROM den_link WHERE id = 1 AND bundle ? 'modules'`).Scan(&raw)
-		if errors.Is(err, pgx.ErrNoRows) || err != nil {
-			return nil
-		}
-		return ParseDenModules(raw)
-	}
-}
-
-// ParseDenModules turns Den's module list into catalog sources (HR itself
-// is skipped).
-func ParseDenModules(raw []byte) []Source {
-	var mods []DenModule
-	if json.Unmarshal(raw, &mods) != nil {
-		return nil
-	}
-	out := []Source{}
-	for _, m := range mods {
-		slug := strings.TrimSpace(m.Slug)
-		if slug == "" || slug == "hr" {
-			continue
-		}
-		u := strings.TrimSpace(m.RoleCatalogURL)
-		if u == "" && strings.TrimSpace(m.InternalURL) != "" {
-			u = strings.TrimRight(strings.TrimSpace(m.InternalURL), "/") + "/api/role-catalog"
-		}
-		if u != "" {
-			out = append(out, Source{Slug: slug, URL: u})
-		}
-	}
-	return out
 }

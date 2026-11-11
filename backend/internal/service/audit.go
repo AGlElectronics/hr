@@ -13,7 +13,7 @@ import (
 )
 
 // AccessHistoryActions are the audit actions kept after an offboarding (for
-// Retention.OffboardedAuditMonths): who granted or removed which access,
+// Retention.OffboardedAuditDays): who granted or removed which access,
 // when. Everything else about the person is deleted with them.
 var AccessHistoryActions = []string{
 	"onboarding.complete", "person.access.change", "person.status.paused", "person.status.active",

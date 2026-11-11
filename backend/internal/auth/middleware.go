@@ -8,27 +8,30 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/AGlElectronics/hr/backend/internal/actor"
+	"github.com/AGlElectronics/hr/backend/internal/authbase"
 	"github.com/AGlElectronics/hr/backend/internal/authz"
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
 )
 
 // Middleware authenticates API requests and works out the caller's HR roles.
-//   - AUTH_MODE=dev: X-Dev-User (or DEV_DEFAULT_USER) stamps the actor. The
-//     caller is an HR admin unless X-Dev-Groups lists other groups.
-//   - AUTH_MODE=oidc: requires a valid Bearer ID token from the shared Keycloak.
+//   - AUTH_MODE=dev (only with APP_ENV=development): X-Dev-User (or
+//     DEV_DEFAULT_USER) stamps the actor. The caller is an HR admin unless
+//     X-Dev-Groups lists other groups.
+//   - AUTH_MODE=oidc: requires a valid Bearer access token for HR's API.
 //
 // resolver (may be nil) adds the caller's HR person record and the
 // departments they lead.
 func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier, resolver *authz.Resolver) func(http.Handler) http.Handler {
+	devAuth := cfg.Auth().DevAuth()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			var a *actor.Actor
 
-			switch cfg.AuthMode {
-			case config.AuthModeDev, "":
-				name := strings.TrimSpace(r.Header.Get("X-Dev-User"))
+			switch {
+			case devAuth:
+				name := strings.TrimSpace(r.Header.Get(authbase.HeaderDevUser))
 				if name == "" {
 					name = cfg.DevDefaultUser
 				}
@@ -36,7 +39,7 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier, resolver *authz.
 					name = "dev-hr-admin"
 				}
 				groups := cfg.AdminGroups
-				if raw := strings.TrimSpace(r.Header.Get("X-Dev-Groups")); raw != "" {
+				if raw := strings.TrimSpace(r.Header.Get(authbase.HeaderDevGroups)); raw != "" {
 					groups = nil
 					for _, g := range strings.Split(raw, ",") {
 						if g = strings.TrimSpace(g); g != "" {
@@ -47,7 +50,7 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier, resolver *authz.
 				a = &actor.Actor{Username: name, Issuer: "dev:", Subject: name, Groups: groups,
 					Email: strings.TrimSpace(r.Header.Get("X-Dev-Email")), EmailVerified: r.Header.Get("X-Dev-Email") != ""}
 
-			case config.AuthModeOIDC:
+			case cfg.AuthMode == config.AuthModeOIDC:
 				if oidcVerifier == nil {
 					httperror.Render(w, r, httperror.Internal(errors.New("oidc verifier not initialised")))
 					return
@@ -84,14 +87,15 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier, resolver *authz.
 	}
 }
 
-// RolesFor maps IdP groups to HR roles.
+// RolesFor maps IdP groups to HR roles with OIDC_GROUP_MATCH and
+// OIDC_GROUP_PREFIX (groupmatch).
 func RolesFor(cfg *config.Config, groups []string) []string {
 	var roles []string
 	for _, rg := range []struct {
 		role   string
 		groups []string
 	}{{authz.RoleAdmin, cfg.AdminGroups}, {authz.RoleViewer, cfg.ViewerGroups}, {authz.RoleLead, cfg.LeadGroups}} {
-		if inAnyGroup(groups, rg.groups) {
+		if cfg.GroupMatch.MatchAny(groups, rg.groups) {
 			roles = append(roles, rg.role)
 		}
 	}
@@ -138,19 +142,6 @@ func RequireGlobal(p authz.Permission) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// inAnyGroup matches group names with or without Keycloak's leading "/".
-func inAnyGroup(have, want []string) bool {
-	for _, h := range have {
-		h = strings.TrimPrefix(h, "/")
-		for _, w := range want {
-			if strings.EqualFold(h, strings.TrimPrefix(w, "/")) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func bearerFromHeader(h string) string {

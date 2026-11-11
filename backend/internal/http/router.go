@@ -13,7 +13,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
@@ -21,11 +20,12 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/actor"
 	"github.com/AGlElectronics/hr/backend/internal/audit"
 	"github.com/AGlElectronics/hr/backend/internal/auth"
+	"github.com/AGlElectronics/hr/backend/internal/authbase"
 	"github.com/AGlElectronics/hr/backend/internal/authz"
 	"github.com/AGlElectronics/hr/backend/internal/catalog"
-	"github.com/AGlElectronics/hr/backend/internal/clientip"
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
+	"github.com/AGlElectronics/hr/backend/internal/groupmatch"
 	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/netguard"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
@@ -96,8 +96,12 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r := chi.NewRouter()
 	cfg := deps.Config
 
+	authCfg := cfg.Auth()
+
 	r.Use(chimiddleware.RequestID)
-	r.Use(clientip.Middleware(cfg.TrustedProxyCIDRs))
+	// RemoteAddr becomes the real client behind TRUSTED_PROXY_CIDRS, before
+	// the request log and every rate limiter.
+	r.Use(authCfg.TrustedProxies.Middleware)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.Timeout(60 * time.Second))
 
@@ -113,13 +117,15 @@ func NewRouter(deps Deps, version string) http.Handler {
 	}))
 	r.Use(hlog.RequestIDHandler("request_id", "X-Request-ID"))
 
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   cfg.CORSAllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization", "X-Dev-User", "X-Request-ID"},
-		ExposedHeaders:   []string{"X-Request-ID"},
-		AllowCredentials: true,
-		MaxAge:           300,
+	// Shared hardening (authbase): API security headers on every response,
+	// dev identity headers removed unless AUTH_MODE=dev in development, and
+	// CORS that only lets dev headers through in dev mode and lets the web
+	// app read X-Request-ID.
+	r.Use(authbase.SecurityHeaders)
+	r.Use(authCfg.StripDevHeaders)
+	r.Use(authCfg.CORS(authbase.CORSOptions{
+		AllowedOrigins: cfg.CORSAllowedOrigins,
+		ExposeHeaders:  authbase.DefaultExposeHeaders,
 	}))
 
 	health := newHealthHandler(deps.Pool, version)
@@ -128,24 +134,28 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 	self := catalog.Self(firstOf(cfg.AdminGroups), firstOf(cfg.ViewerGroups), firstOf(cfg.LeadGroups))
 	fetcher := &catalog.Fetcher{
-		Sources:  catalog.ParseSources(cfg.RoleCatalogSources),
-		Discover: catalog.DenSources(deps.Pool),
-		Cache:    &catalog.PGCache{Pool: deps.Pool},
-		Self:     self,
-		TTL:      30 * time.Second,
+		Sources: catalog.ParseSources(cfg.RoleCatalogSources),
+		Cache:   &catalog.PGCache{Pool: deps.Pool},
+		Token:   cfg.HRServiceToken,
+		Self:    self,
+		TTL:     30 * time.Second,
 	}
 	validator := service.NewAccessValidator(fetcher.FetchAll)
 	jobs := deps.Jobs
 	if jobs == nil {
 		jobs = service.NewJobQueue(deps.Pool, deps.Logger, true)
 	}
-	r.Get("/api/role-catalog", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, self)
-	})
+	resolver := authz.NewResolver(deps.Pool, cfg.GroupMatch)
+	authMW := auth.Middleware(cfg, deps.OIDCVerifier, resolver)
+
+	// Token endpoints are rate limited per client so a wrong token cannot
+	// be guessed fast.
+	tokenLimiter := authbase.NewRateLimiter(authbase.RateLimitOptions{Rate: 1, Burst: 20})
+	r.With(tokenLimiter.Middleware).Get("/api/role-catalog", roleCatalogAuth(cfg.HRServiceToken, authMW, roleCatalogHandler(self)))
 
 	den := deps.Den
 	if den == nil {
-		den = denlink.New(deps.Pool, denlink.Config{Slug: "hr", Version: version, Mode: cfg.DenMode}, deps.Logger)
+		den = denlink.New(deps.Pool, cfg.DenConfig(version), deps.Logger)
 	}
 	r.Get("/api/brand", den.BrandHandler("/api/brand"))
 	r.Get("/api/brand/{role}", den.AssetHandler)
@@ -179,7 +189,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 			if scope == "" {
 				scope = "global"
 			}
-			out = append(out, service.RolePlanInput{RoleName: r.Key, GroupName: r.Group, Scope: scope})
+			out = append(out, service.RolePlanInput{RoleName: r.Key, GroupName: r.IdPGroup(), Scope: scope})
 		}
 		return out
 	})
@@ -255,12 +265,12 @@ func NewRouter(deps Deps, version string) http.Handler {
 			out := map[string]bool{}
 			for _, list := range [][]string{cfg.AdminGroups, cfg.ViewerGroups, cfg.LeadGroups} {
 				for _, g := range list {
-					out[g] = true
+					out[groupmatch.Normalize(g)] = true
 				}
 			}
 			for _, m := range fetcher.FetchAll(ctx) {
 				for _, role := range m.Roles {
-					out[role.Group] = true
+					out[groupmatch.Normalize(role.Group)] = true
 				}
 			}
 			return out
@@ -294,11 +304,16 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 	// Service-to-service: bearer HR_DIRECTORY_TOKEN, no user sign-in.
 	directoryH := &directoryHandler{token: cfg.DirectoryToken, depts: deptSvc, bundles: bundleSvc}
-	r.Get("/api/internal/directory/groups", directoryH.groups)
+	r.With(tokenLimiter.Middleware).Get("/api/internal/directory/groups", directoryH.groups)
+
+	// Per signed-in person: the address lookup calls a third-party service
+	// (Photon), self-service writes are open to anyone signed in.
+	addressLimiter := authbase.NewRateLimiter(authbase.RateLimitOptions{Rate: 2, Burst: 30, Key: authbase.BySubject(userKey)})
+	selfLimiter := authbase.NewRateLimiter(authbase.RateLimitOptions{Rate: 1, Burst: 10, Key: authbase.BySubject(userKey)})
 
 	r.Route("/api", func(api chi.Router) {
 		api.Use(den.RequirePaired)
-		api.Use(auth.Middleware(cfg, deps.OIDCVerifier, authz.NewResolver(deps.Pool)))
+		api.Use(authMW)
 
 		api.Get("/me", meHandler(cfg))
 		prefs := den.PreferencesHandler(func(r *http.Request) (string, string, bool) {
@@ -313,7 +328,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 		// "Waiting for a coordinator": any signed-in person, own entry only.
 		api.Get("/self-service/registration", review.selfGet)
-		api.Put("/self-service/registration", review.selfSubmit)
+		api.With(selfLimiter.Middleware).Put("/self-service/registration", review.selfSubmit)
 		api.Get("/self-service/departments", review.selfDepartments)
 
 		api.Group(func(api chi.Router) {
@@ -352,7 +367,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 			})
 			api.With(require(authz.PeopleWrite)).Get("/check/email", checks.email)
 			api.With(require(authz.PeopleWrite)).Get("/check/username", checks.username)
-			api.With(require(authz.PeopleWrite)).Get("/address/search", checks.addressSearch)
+			api.With(require(authz.PeopleWrite), addressLimiter.Middleware).Get("/address/search", checks.addressSearch)
 			api.With(require(authz.PeopleRead)).Get("/dashboard", misc.dashboard)
 			api.With(global(authz.IdPGroupsRead)).Get("/idp/groups", misc.idpGroups)
 			api.With(global(authz.AuditRead)).Get("/audit", auditH.list)

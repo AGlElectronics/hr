@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -15,12 +16,81 @@ func TestParseSources(t *testing.T) {
 	}
 }
 
-func TestParseDenModules(t *testing.T) {
-	got := ParseDenModules([]byte(`[{"slug":"hr","internal_url":"http://hr"},
-		{"slug":"stash","internal_url":"https://stash-backend.stash.svc:8080/"},
-		{"slug":"wiki","role_catalog_url":"http://wiki/api/role-catalog"},{"slug":"empty"}]`))
-	if len(got) != 2 || got[0].URL != "https://stash-backend.stash.svc:8080/api/role-catalog" || got[1].Slug != "wiki" {
-		t.Fatalf("unexpected %+v", got)
+func TestFetchSendsTokenAndHonoursETag(t *testing.T) {
+	var hits, notModified atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.Header.Get("Authorization") != "Bearer "+strings.Repeat("t", 32) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("ETag", `"rev-1"`)
+		if r.Header.Get("If-None-Match") == `"rev-1"` {
+			notModified.Add(1)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		_, _ = w.Write([]byte(`{"revision":"rev-1","roles":[{"key":"mailbox:fundraising","group":"desk/mailboxes/fundraising",
+			"group_display":"/desk/mailboxes/Fundraising","assignable":true,"privileged":false,"dynamic":true}]}`))
+	}))
+	defer srv.Close()
+
+	cache := &memCache{m: map[string]Module{}}
+	f := &Fetcher{Sources: []Source{{Slug: "desk", URL: srv.URL}}, Cache: cache, Token: strings.Repeat("t", 32)}
+	mods := f.FetchAll(context.Background())
+	desk := mods[1]
+	if desk.Status != StatusOK || desk.Revision != "rev-1" || desk.ETag != `"rev-1"` {
+		t.Fatalf("first fetch: %+v", desk)
+	}
+	r := desk.Roles[0]
+	if !r.Dynamic || r.Group != "desk/mailboxes/fundraising" || r.IdPGroup() != "/desk/mailboxes/Fundraising" {
+		t.Fatalf("role: %+v", r)
+	}
+	mods = f.FetchAll(context.Background())
+	if notModified.Load() != 1 || mods[1].Status != StatusOK || len(mods[1].Roles) != 1 {
+		t.Fatalf("second fetch should reuse the cache on 304: %d %+v", notModified.Load(), mods[1])
+	}
+
+	f.Token = ""
+	f.Invalidate()
+	mods = f.FetchAll(context.Background())
+	if mods[1].Status != StatusCached || !strings.Contains(mods[1].Error, "HR_SERVICE_TOKEN") {
+		t.Fatalf("without the token the module refuses and the cache is shown: %+v", mods[1])
+	}
+}
+
+func TestSourcesMergeOverride(t *testing.T) {
+	f := &Fetcher{
+		Sources: []Source{{Slug: "stash", URL: "http://override/api/role-catalog"}, {Slug: "extra", URL: "http://extra"}},
+		Discover: func(context.Context) []Source {
+			return []Source{{Slug: "stash", URL: "http://den/stash"}, {Slug: "wiki", URL: "http://den/wiki"}}
+		},
+	}
+	got := f.sources(context.Background())
+	if len(got) != 3 || got[0].URL != "http://override/api/role-catalog" || got[1].Slug != "wiki" || got[2].Slug != "extra" {
+		t.Fatalf("merge: %+v", got)
+	}
+	f.Discover = nil
+	if only := f.sources(context.Background()); len(only) != 2 || only[0].Slug != "stash" {
+		t.Fatalf("sources alone: %+v", only)
+	}
+}
+
+func TestSelfContract(t *testing.T) {
+	m := Self("/HR-Admin", "hr-viewer", "hr-lead")
+	if m.Revision == "" || m.Revision != Self("/HR-Admin", "hr-viewer", "hr-lead").Revision {
+		t.Fatalf("revision must be stable: %q", m.Revision)
+	}
+	for _, r := range m.Roles {
+		if !r.Privileged || r.Dynamic {
+			t.Fatalf("every HR role is privileged and static: %+v", r)
+		}
+	}
+	if a := m.Roles[0]; a.Group != "hr-admin" || a.GroupDisplay != "/HR-Admin" {
+		t.Fatalf("admin group forms: %+v", a)
+	}
+	if Self("hr-admin", "hr-viewer", "x").Revision == m.Revision {
+		t.Fatal("revision must change with the roles")
 	}
 }
 

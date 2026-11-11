@@ -2,17 +2,16 @@ package service
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/AGlElectronics/hr/backend/internal/audit"
+	"github.com/AGlElectronics/hr/backend/internal/denlink"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
 	"github.com/google/uuid"
 )
@@ -68,20 +67,25 @@ type IdentitySettings struct {
 type RetentionSettings struct {
 	// Enabled turns the automatic purge on.
 	Enabled bool `json:"enabled"`
-	// ApplicantMonths: applicants untouched this long are deleted.
-	ApplicantMonths int `json:"applicant_months"`
-	// PausedMonths: people paused this long are offboarded.
-	PausedMonths int `json:"paused_months"`
-	// OffboardedAuditMonths: access history kept after an offboarding.
-	OffboardedAuditMonths int `json:"offboarded_audit_months"`
+	// ApplicantDays: applicants untouched this long are deleted.
+	ApplicantDays int `json:"applicant_days"`
+	// PausedDays: people paused this long are offboarded.
+	PausedDays int `json:"paused_days"`
+	// OffboardedAuditDays: access history kept after an offboarding.
+	OffboardedAuditDays int `json:"offboarded_audit_days"`
 	// WarningDays: HR admins are emailed this many days before a purge.
 	WarningDays int `json:"warning_days"`
-	// ManagedBy is "den" when Den's module settings set retention.
+	// ManagedBy is "den" when Den's module settings set any of the periods.
 	ManagedBy string `json:"managed_by,omitempty"`
+	// DenFields lists the fields Den sets (read-only in HR).
+	DenFields []string `json:"den_fields,omitempty"`
 }
 
 // DefaultRetention are the retention defaults (pending legal review).
-var DefaultRetention = RetentionSettings{Enabled: true, ApplicantMonths: 6, PausedMonths: 24, OffboardedAuditMonths: 12, WarningDays: 14}
+var DefaultRetention = RetentionSettings{Enabled: true, ApplicantDays: 180, PausedDays: 730, OffboardedAuditDays: 365, WarningDays: 14}
+
+// maxRetentionDays is ten years.
+const maxRetentionDays = 3650
 
 // WorkspaceSettings configure the Google Workspace connector.
 type WorkspaceSettings struct {
@@ -115,14 +119,17 @@ var hrOnlyKeys = map[string]bool{
 	"identity_staff_mode": true, "identity_sso_name": true, "identity_sso_url": true, "identity_admin_console_url": true,
 	"workspace_enabled": true, "workspace_domain": true, "workspace_admin_email": true, "workspace_org_unit": true,
 	"workspace_delete_after_days": true, "workspace_reminder_days": true,
-	"retention_enabled": true, "retention_applicant_months": true, "retention_paused_months": true,
-	"retention_offboarded_audit_months": true, "retention_warning_days": true,
+	"retention_enabled": true, "retention_applicant_days": true, "retention_paused_days": true,
+	"retention_offboarded_audit_days": true, "retention_warning_days": true,
 }
 
 // OrgSource supplies organisation settings from Den when HR is paired.
 type OrgSource interface {
 	Paired() bool
 	Setting(key string) (string, bool)
+	// ModuleSettings are Den's module settings (nil-safe; nil while
+	// standalone or when Den sends none).
+	ModuleSettings() *denlink.ModuleSettings
 }
 
 // SettingsService stores Settings as key/value rows. When HR is paired with
@@ -148,6 +155,8 @@ func (s *SettingsService) SetWorkspaceAvailable(v bool) { s.workspaceAvailable =
 
 // SetAddressURLCheck installs the outbound URL guard for the address lookup.
 func (s *SettingsService) SetAddressURLCheck(f func(raw string) error) { s.addressURLCheck = f }
+
+var _ OrgSource = (*denlink.Client)(nil)
 
 // ErrManagedInDen is returned by Update while HR is paired with Den.
 var ErrManagedInDen = httperror.New(httperror.CodeConflict, "These settings are managed in Den (Admin → Organisation).")
@@ -218,12 +227,12 @@ func (s *SettingsService) Get(ctx context.Context) (*Settings, error) {
 			out.Workspace.ReminderDays = atoiOr(v, DefaultWorkspace.ReminderDays)
 		case "retention_enabled":
 			out.Retention.Enabled = v == "true"
-		case "retention_applicant_months":
-			out.Retention.ApplicantMonths = atoiOr(v, DefaultRetention.ApplicantMonths)
-		case "retention_paused_months":
-			out.Retention.PausedMonths = atoiOr(v, DefaultRetention.PausedMonths)
-		case "retention_offboarded_audit_months":
-			out.Retention.OffboardedAuditMonths = atoiOr(v, DefaultRetention.OffboardedAuditMonths)
+		case "retention_applicant_days":
+			out.Retention.ApplicantDays = atoiOr(v, DefaultRetention.ApplicantDays)
+		case "retention_paused_days":
+			out.Retention.PausedDays = atoiOr(v, DefaultRetention.PausedDays)
+		case "retention_offboarded_audit_days":
+			out.Retention.OffboardedAuditDays = atoiOr(v, DefaultRetention.OffboardedAuditDays)
 		case "retention_warning_days":
 			out.Retention.WarningDays = atoiOr(v, DefaultRetention.WarningDays)
 		}
@@ -253,11 +262,7 @@ func (s *SettingsService) Get(ctx context.Context) (*Settings, error) {
 				*f.dst, _ = s.den.Setting(f.key)
 			}
 		}
-		if r, ok, err := s.denRetention(ctx); err != nil {
-			return nil, err
-		} else if ok {
-			out.Retention = r
-		}
+		applyDenRetention(&out.Retention, s.den.ModuleSettings())
 	}
 	if eff.StaffMode == "" {
 		eff.StaffMode = "own"
@@ -266,24 +271,53 @@ func (s *SettingsService) Get(ctx context.Context) (*Settings, error) {
 	return out, nil
 }
 
-// denRetention reads the "retention" section Den pushes in the integration
-// bundle (Den → Admin → Modules → module settings). Missing fields keep the
-// defaults.
-func (s *SettingsService) denRetention(ctx context.Context) (RetentionSettings, bool, error) {
-	var raw []byte
-	err := s.pool.QueryRow(ctx, `SELECT bundle->'retention' FROM den_link WHERE id = 1 AND bundle ? 'retention'`).Scan(&raw)
-	if errors.Is(err, pgx.ErrNoRows) || len(raw) == 0 || string(raw) == "null" {
-		return RetentionSettings{}, false, nil
-	}
-	if err != nil {
-		return RetentionSettings{}, false, httperror.Internal(err)
-	}
+// storedRetention is HR's own retention periods, without Den's overrides.
+func (s *SettingsService) storedRetention(ctx context.Context) (RetentionSettings, error) {
 	r := DefaultRetention
-	if err := json.Unmarshal(raw, &r); err != nil {
-		return RetentionSettings{}, false, nil
+	rows, err := s.pool.Query(ctx, `SELECT key, value FROM settings WHERE key LIKE 'retention\_%'`)
+	if err != nil {
+		return r, err
 	}
-	r.ManagedBy = "den"
-	return r, true, nil
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return r, err
+		}
+		switch k {
+		case "retention_applicant_days":
+			r.ApplicantDays = atoiOr(v, r.ApplicantDays)
+		case "retention_paused_days":
+			r.PausedDays = atoiOr(v, r.PausedDays)
+		case "retention_offboarded_audit_days":
+			r.OffboardedAuditDays = atoiOr(v, r.OffboardedAuditDays)
+		}
+	}
+	return r, rows.Err()
+}
+
+// applyDenRetention overrides the periods Den's shared retention settings
+// set (Den → Admin → Modules → module settings):
+//
+//	retention.inactive_users_days        → applicants and paused people
+//	retention.offboarded_volunteers_days → access history after offboarding
+//
+// 0 from Den is "keep forever" for Den but would purge at once here, so it
+// is ignored. Whether the purge runs and the warning stay HR settings.
+func applyDenRetention(r *RetentionSettings, ms *denlink.ModuleSettings) {
+	den := ms.Retention()
+	set := func(field string, dst *int, v *int) {
+		if v != nil && *v > 0 {
+			*dst = min(*v, maxRetentionDays)
+			r.DenFields = append(r.DenFields, field)
+		}
+	}
+	set("applicant_days", &r.ApplicantDays, den.InactiveUsersDays)
+	set("paused_days", &r.PausedDays, den.InactiveUsersDays)
+	set("offboarded_audit_days", &r.OffboardedAuditDays, den.OffboardedVolunteersDays)
+	if len(r.DenFields) > 0 {
+		r.ManagedBy = "den"
+	}
 }
 
 var emailListRE = regexp.MustCompile(`^[^@\s,]+@[^@\s,]+\.[^@\s,]+$`)
@@ -369,11 +403,11 @@ func (in *Settings) Normalize() map[string]string {
 	}
 
 	rt := &in.Retention
-	rt.ManagedBy = ""
-	for name, v := range map[string]int{"retention.applicant_months": rt.ApplicantMonths, "retention.paused_months": rt.PausedMonths,
-		"retention.offboarded_audit_months": rt.OffboardedAuditMonths} {
-		if v < 1 || v > 120 {
-			fields[name] = "between 1 and 120 months"
+	rt.ManagedBy, rt.DenFields = "", nil
+	for name, v := range map[string]int{"retention.applicant_days": rt.ApplicantDays, "retention.paused_days": rt.PausedDays,
+		"retention.offboarded_audit_days": rt.OffboardedAuditDays} {
+		if v < 1 || v > maxRetentionDays {
+			fields[name] = fmt.Sprintf("between 1 and %d days", maxRetentionDays)
 		}
 	}
 	if rt.WarningDays < 1 || rt.WarningDays > 90 {
@@ -389,9 +423,22 @@ func (s *SettingsService) Update(ctx context.Context, actor string, in Settings)
 	if err != nil {
 		return nil, err
 	}
-	denRetention := current.Retention.ManagedBy == "den"
-	if denRetention {
-		in.Retention = current.Retention
+	// Periods Den sets keep Den's value; HR stores its own underneath.
+	stored := current.Retention
+	if len(current.Retention.DenFields) > 0 {
+		if stored, err = s.storedRetention(ctx); err != nil {
+			return nil, httperror.Internal(err)
+		}
+	}
+	for _, f := range current.Retention.DenFields {
+		switch f {
+		case "applicant_days":
+			in.Retention.ApplicantDays = stored.ApplicantDays
+		case "paused_days":
+			in.Retention.PausedDays = stored.PausedDays
+		case "offboarded_audit_days":
+			in.Retention.OffboardedAuditDays = stored.OffboardedAuditDays
+		}
 	}
 	fields := in.Normalize()
 	if s.paired() {
@@ -402,7 +449,7 @@ func (s *SettingsService) Update(ctx context.Context, actor string, in Settings)
 		}
 	}
 	if in.Workspace.Enabled && !current.Workspace.Enabled && !s.workspaceAvailable {
-		fields["workspace.enabled"] = "the Google Workspace connector is not available in this HR version"
+		fields["workspace.enabled"] = "set GOOGLE_WORKSPACE_CREDENTIALS_FILE to the service-account key and restart HR"
 	}
 	if fields["address_lookup_url"] == "" && in.AddressLookupURL != "" && s.addressURLCheck != nil {
 		if err := s.addressURLCheck(in.AddressLookupURL); err != nil {
@@ -433,13 +480,11 @@ func (s *SettingsService) Update(ctx context.Context, actor string, in Settings)
 		"workspace_delete_after_days": i(in.Workspace.DeleteAfterDays),
 		"workspace_reminder_days":     i(in.Workspace.ReminderDays),
 	}
-	if !denRetention {
-		values["retention_enabled"] = b(in.Retention.Enabled)
-		values["retention_applicant_months"] = i(in.Retention.ApplicantMonths)
-		values["retention_paused_months"] = i(in.Retention.PausedMonths)
-		values["retention_offboarded_audit_months"] = i(in.Retention.OffboardedAuditMonths)
-		values["retention_warning_days"] = i(in.Retention.WarningDays)
-	}
+	values["retention_enabled"] = b(in.Retention.Enabled)
+	values["retention_applicant_days"] = i(in.Retention.ApplicantDays)
+	values["retention_paused_days"] = i(in.Retention.PausedDays)
+	values["retention_offboarded_audit_days"] = i(in.Retention.OffboardedAuditDays)
+	values["retention_warning_days"] = i(in.Retention.WarningDays)
 	for k, v := range values {
 		if s.paired() && !hrOnlyKeys[k] {
 			continue

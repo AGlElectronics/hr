@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/AGlElectronics/hr/backend/internal/actor"
+	"github.com/AGlElectronics/hr/backend/internal/groupmatch"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
 )
 
@@ -238,12 +239,20 @@ func ScopeFilter(ctx context.Context, p Permission) ([]uuid.UUID, error) {
 
 // Resolver finds the caller's HR person record and the departments they
 // lead. Middleware calls it once per request.
-type Resolver struct{ pool *pgxpool.Pool }
+type Resolver struct {
+	pool   *pgxpool.Pool
+	groups groupmatch.Config
+}
 
-// NewResolver wires a Resolver; a nil pool resolves nothing.
-func NewResolver(pool *pgxpool.Pool) *Resolver { return &Resolver{pool: pool} }
+// NewResolver wires a Resolver; a nil pool resolves nothing. groups is how
+// token groups are compared with department lead groups.
+func NewResolver(pool *pgxpool.Pool, groups groupmatch.Config) *Resolver {
+	return &Resolver{pool: pool, groups: groups}
+}
 
-// Resolve fills a.PersonID and a.LeadOf from the database.
+// Resolve fills a.PersonID and a.LeadOf. A caller leads a department when
+// HR's lead list names their person record, or when their token carries the
+// department's lead group (dept-<slug>-lead), matched with groupmatch.
 func (r *Resolver) Resolve(ctx context.Context, a *actor.Actor) error {
 	if r == nil || r.pool == nil || a.Subject == "" {
 		return nil
@@ -251,26 +260,31 @@ func (r *Resolver) Resolve(ctx context.Context, a *actor.Actor) error {
 	var id uuid.UUID
 	err := r.pool.QueryRow(ctx, `
 SELECT id FROM people WHERE idp_subject = $1 OR (idp_subject IS NULL AND idp_user_id = $1) LIMIT 1`, a.Subject).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		return err
+	default:
+		a.PersonID = &id
 	}
-	a.PersonID = &id
 	rows, err := r.pool.Query(ctx, `
-SELECT dl.department_id FROM department_leads dl JOIN departments d ON d.id = dl.department_id
- WHERE dl.person_id = $1 AND d.archived_at IS NULL`, id)
+SELECT d.id, d.group_name, ($1::uuid IS NOT NULL AND EXISTS (
+         SELECT 1 FROM department_leads dl WHERE dl.department_id = d.id AND dl.person_id = $1))
+  FROM departments d WHERE d.archived_at IS NULL`, a.PersonID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var d uuid.UUID
-		if err := rows.Scan(&d); err != nil {
+		var group string
+		var listed bool
+		if err := rows.Scan(&d, &group, &listed); err != nil {
 			return err
 		}
-		a.LeadOf = append(a.LeadOf, d)
+		if listed || (len(a.Groups) > 0 && r.groups.Match(a.Groups, group+"-lead")) {
+			a.LeadOf = append(a.LeadOf, d)
+		}
 	}
 	return rows.Err()
 }

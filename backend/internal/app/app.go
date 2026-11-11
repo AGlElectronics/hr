@@ -23,6 +23,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/db"
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
+	"github.com/AGlElectronics/hr/backend/internal/gworkspace"
 	httpx "github.com/AGlElectronics/hr/backend/internal/http"
 	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
@@ -105,27 +106,39 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			Msg("object storage configured (LOCAL DEV ONLY; MinIO must never be used in production)")
 	}
 
-	var mailer mail.Sender
-	if m := mail.NewSMTP(mail.SMTPConfig{
-		Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
-		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName,
-	}); m != nil {
-		mailer = m
-		logger.Info().Str("host", cfg.SMTPHost).Msg("smtp mailer ready")
-	} else {
-		logger.Warn().Msg("SMTP_HOST not set — HR cannot email offboarding notices")
+	den, err := denlink.Open(pool, cfg.DenConfig(Version), logger)
+	if err != nil {
+		return fmt.Errorf("den link: %w", err)
 	}
-
-	if cfg.GoogleWorkspaceCredentialsFile != "" {
-		logger.Warn().Str("file", cfg.GoogleWorkspaceCredentialsFile).
-			Msg("GOOGLE_WORKSPACE_CREDENTIALS_FILE is set, but this HR version has no Google Workspace client yet: the connector stays unavailable")
-	}
-
-	den := denlink.New(pool, denlink.Config{Slug: "hr", Version: Version, InternalURL: cfg.DenInternalURL, Mode: cfg.DenMode}, logger)
 	if err := den.Restore(ctx); err != nil {
 		logger.Warn().Err(err).Msg("den link: load failed")
 	}
 	go den.Run(ctx)
+
+	// Den's SMTP setting wins while paired; SMTP_* is the fallback.
+	envSMTP := mail.NewSMTP(mail.SMTPConfig{
+		Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
+		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName,
+	})
+	mailer := &mail.Dynamic{Fallback: envSMTP, Pick: func() (mail.SMTPConfig, bool) {
+		s, set := den.ModuleSettings().SMTP()
+		return mail.FromDen(s, set, cfg.SMTPPassword)
+	}}
+	if envSMTP != nil {
+		logger.Info().Str("host", cfg.SMTPHost).Msg("own SMTP configured (Den's SMTP wins when paired and set)")
+	} else {
+		logger.Warn().Msg("SMTP_HOST not set: HR emails only through Den's SMTP setting, once paired")
+	}
+
+	var workspace provisioners.WorkspaceFactory
+	if cfg.GoogleWorkspaceCredentialsFile != "" {
+		workspace = provisioners.NewGoogleWorkspaceFactory(cfg.GoogleWorkspaceCredentialsFile, gworkspace.Options{})
+		logger.Info().Str("file", cfg.GoogleWorkspaceCredentialsFile).Msg("google workspace connector available (turn it on in HR settings)")
+	}
+
+	if cfg.HRServiceToken == "" && cfg.RoleCatalogSources != "" {
+		logger.Warn().Msg("HR_SERVICE_TOKEN not set: modules refuse HR's role catalog requests (401)")
+	}
 
 	gate := httpx.NewRoleGate(cfg, pool, idp, logger)
 	if gate.Active() {
@@ -148,6 +161,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		Den:          den,
 		Jobs:         jobs,
 		Services:     services,
+		Workspace:    workspace,
 	}, Version)
 	go jobs.Run(ctx, cfg.JobInterval)
 	go services.Maintenance.Run(ctx, cfg.MaintenanceInterval)

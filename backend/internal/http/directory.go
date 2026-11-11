@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/AGlElectronics/hr/backend/internal/groupmatch"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
 	"github.com/AGlElectronics/hr/backend/internal/service"
 )
@@ -53,16 +54,16 @@ func (h *directoryHandler) groups(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]bool{}
 	for _, d := range depts {
 		out = append(out, DirectoryGroup{Name: d.GroupName, DisplayName: d.Name, Kind: "department"})
-		seen[strings.ToLower(d.GroupName)] = true
+		seen[groupmatch.Normalize(d.GroupName)] = true
 		if d.LeadGroup != "" {
 			out = append(out, DirectoryGroup{Name: d.LeadGroup, DisplayName: d.Name + " (leads)", Kind: "department"})
-			seen[strings.ToLower(d.LeadGroup)] = true
+			seen[groupmatch.Normalize(d.LeadGroup)] = true
 		}
 	}
 	access := map[string]int{}
 	for _, b := range bundles {
 		for _, role := range b.Roles {
-			key := strings.ToLower(role.GroupName)
+			key := groupmatch.Normalize(role.GroupName)
 			if key == "" || seen[key] {
 				continue
 			}
