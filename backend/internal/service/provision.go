@@ -203,6 +203,12 @@ func (s *ProvisionService) runJob(ctx context.Context, j Job) error {
 		res.PasswordSetupEmailSent, res.PasswordSetupError = idpRes.PasswordSetupEmailSent, idpRes.PasswordSetupError
 		res.PasswordSetupSkipped = !idpRes.Created || !s.sendSetup
 	}
+	if res.Draft, err = s.drafts.Transition(ctx, draft.ID, domain.DraftStateActive); err != nil {
+		return err
+	}
+	if err := s.people.SetStatus(ctx, person.ID, domain.PersonActive); err != nil {
+		return err
+	}
 	if s.workspace != nil {
 		if fresh, err := s.people.Get(ctx, person.ID); err == nil {
 			person = fresh
@@ -210,13 +216,6 @@ func (s *ProvisionService) runJob(ctx context.Context, j Job) error {
 		if warn := s.workspace.Onboard(ctx, j.CreatedBy, draft, person, j.Attempts); warn != "" {
 			res.Warnings = append(res.Warnings, warn)
 		}
-	}
-
-	if res.Draft, err = s.drafts.Transition(ctx, draft.ID, domain.DraftStateActive); err != nil {
-		return err
-	}
-	if err := s.people.SetStatus(ctx, person.ID, domain.PersonActive); err != nil {
-		return err
 	}
 	pendingKeys := make([]string, 0, len(pending))
 	for _, r := range pending {

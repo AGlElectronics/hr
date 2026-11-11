@@ -54,6 +54,9 @@ type Deps struct {
 	// Services is filled by NewRouter with the services background workers
 	// need (may be nil).
 	Services *Services
+	// Workspace opens the Google Workspace directory; nil while HR has no
+	// Workspace client (the connector is unavailable).
+	Workspace provisioners.WorkspaceFactory
 }
 
 // Services exposes what NewRouter built to the background workers in app.
@@ -65,6 +68,7 @@ type Services struct {
 	Provision *service.ProvisionService
 	// Maintenance holds the periodic housekeeping tasks.
 	Maintenance *service.Maintenance
+	Workspace   *service.WorkspaceService
 }
 
 // NewRoleGate builds the training-requirement service from config. Gating
@@ -199,6 +203,14 @@ func NewRouter(deps Deps, version string) http.Handler {
 	lifecycleSvc.SetOffboardHooks(service.ParseOffboardHooks(cfg.OffboardHooks))
 	lifecycleSvc.SetAccessPlanning(bundleSvc, validator)
 	lifecycleSvc.SetMode(cfg.ProvisionerMode)
+	notifier := service.NewAdminNotifier(settingsSvc, deps.Mailer, directory, cfg.AdminGroups)
+	wsSvc := service.NewWorkspaceService(deps.Pool, settingsSvc, auditWriter, deps.Mailer, notifier, deps.Workspace)
+	settingsSvc.SetWorkspaceAvailable(deps.Workspace != nil)
+	if deps.Workspace != nil {
+		provSvc.SetWorkspace(wsSvc)
+		lifecycleSvc.SetWorkspace(wsSvc)
+	}
+	workspace := &workspaceHandler{svc: wsSvc}
 	jobs.Handle(service.JobBundleSync, service.JobHandler{Run: func(ctx context.Context, j service.Job) error {
 		var p struct {
 			BundleID uuid.UUID `json:"bundle_id"`
@@ -258,12 +270,13 @@ func NewRouter(deps Deps, version string) http.Handler {
 		_, err := auditSvc.PurgeExpired(ctx)
 		return err
 	})
-	notifier := service.NewAdminNotifier(settingsSvc, deps.Mailer, directory, cfg.AdminGroups)
 	retention := service.NewRetentionService(deps.Pool, settingsSvc, lifecycleSvc, notifier, auditWriter)
 	maint.Add("retention", retention.Run)
+	maint.Add("workspace groups", wsSvc.SyncAllDepartments)
+	maint.Add("workspace clean-up", wsSvc.Cleanup)
 	if deps.Services != nil {
 		*deps.Services = Services{Lifecycle: lifecycleSvc, Audit: auditSvc, Settings: settingsSvc, People: peopleSvc, Provision: provSvc,
-			Maintenance: maint}
+			Maintenance: maint, Workspace: wsSvc}
 	}
 
 	require := auth.Require
@@ -342,6 +355,13 @@ func NewRouter(deps Deps, version string) http.Handler {
 					return
 				}
 				writeJSON(w, http.StatusOK, map[string]any{"items": items, "retention": rs})
+			})
+
+			api.Route("/workspace", func(wr chi.Router) {
+				wr.Use(global(authz.WorkspaceManage))
+				wr.Get("/accounts", workspace.list)
+				wr.Post("/accounts/{id}/delete", workspace.deleteNow)
+				wr.Post("/sync", workspace.sync)
 			})
 
 			api.Route("/access-bundles", func(br chi.Router) {

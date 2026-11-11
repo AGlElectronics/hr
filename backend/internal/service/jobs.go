@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -244,18 +245,21 @@ func (q *JobQueue) run(ctx context.Context, j Job) {
 		log.Info().Msg("job succeeded")
 		return
 	}
+	msg := strings.TrimPrefix(err.Error(), ErrPermanent.Error()+": ")
 	if j.Attempts >= j.MaxAttempts || errors.Is(err, ErrPermanent) {
-		_, _ = q.pool.Exec(ctx, `UPDATE background_jobs SET status = 'failed', finished_at = now(), locked_until = NULL, last_error = $2 WHERE id = $1`, j.ID, err.Error())
-		log.Warn().Err(err).Msg("job failed")
+		// Clean up before the job shows as failed, so whoever waits for it
+		// sees the final state.
 		if ok && h.GiveUp != nil {
-			h.GiveUp(ctx, j, err.Error())
+			h.GiveUp(ctx, j, msg)
 		}
+		_, _ = q.pool.Exec(ctx, `UPDATE background_jobs SET status = 'failed', finished_at = now(), locked_until = NULL, last_error = $2 WHERE id = $1`, j.ID, msg)
+		log.Warn().Err(err).Msg("job failed")
 		return
 	}
 	backoff := time.Duration(j.Attempts*j.Attempts) * 30 * time.Second
 	_, _ = q.pool.Exec(ctx, `
 UPDATE background_jobs SET status = 'pending', locked_until = NULL, last_error = $2, run_after = now() + make_interval(secs => $3)
- WHERE id = $1`, j.ID, err.Error(), backoff.Seconds())
+ WHERE id = $1`, j.ID, msg, backoff.Seconds())
 	log.Warn().Err(err).Dur("retry_in", backoff).Msg("job failed; will retry")
 }
 
