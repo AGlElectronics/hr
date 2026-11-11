@@ -116,6 +116,11 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		logger.Warn().Msg("SMTP_HOST not set — HR cannot email offboarding notices")
 	}
 
+	if cfg.GoogleWorkspaceCredentialsFile != "" {
+		logger.Warn().Str("file", cfg.GoogleWorkspaceCredentialsFile).
+			Msg("GOOGLE_WORKSPACE_CREDENTIALS_FILE is set, but this HR version has no Google Workspace client yet: the connector stays unavailable")
+	}
+
 	den := denlink.New(pool, denlink.Config{Slug: "hr", Version: Version, InternalURL: cfg.DenInternalURL, Mode: cfg.DenMode}, logger)
 	if err := den.Restore(ctx); err != nil {
 		logger.Warn().Err(err).Msg("den link: load failed")
