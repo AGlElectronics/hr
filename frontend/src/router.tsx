@@ -60,7 +60,9 @@ async function requireSession() {
     throw redirect({ to: '/login', search: { redirect: '/dashboard' } });
   }
   let user = await mgr.getUser();
-  if (user?.expired) {
+  // Tokens are kept in memory, so after a reload there is no user yet: sign in
+  // silently through the Keycloak session before sending anyone to the login page.
+  if (!user || user.expired) {
     try {
       user = await mgr.signinSilent();
     } catch {

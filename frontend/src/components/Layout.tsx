@@ -16,7 +16,7 @@ import {
   Users,
 } from 'lucide-react';
 
-import { isDenPairingRequired, useDenState } from '@/api/den';
+import { isDenCredentialRevoked, isDenPairingRequired, useDenState } from '@/api/den';
 import { can, canGlobal, getMe, type Me, type Permission } from '@/api/me';
 import { isOidcAuthMode, signOutOidc } from '@/auth/oidc';
 import { DenConnection } from '@/components/DenConnection';
@@ -236,6 +236,14 @@ export function Layout() {
       </aside>
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col w-full md:min-h-screen">
+        {isDenCredentialRevoked(denState.data) && canGlobal(me.data, 'den.manage') && (
+          <div role="alert" className="border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+            Den rejected HR&apos;s credential, so Den&apos;s settings no longer update here.{' '}
+            <Link to="/settings" className="font-semibold underline">
+              Pair again in Settings
+            </Link>
+          </div>
+        )}
         {me.error ? (
           <p className="p-6 text-destructive">Could not load your account: {(me.error as Error).message}</p>
         ) : (

@@ -18,11 +18,11 @@ export function installAuth(): void {
       if (!user) {
         return {};
       }
-      const bearer = user.id_token ?? user.access_token;
-      if (!bearer || user.expired) {
+      // The backend accepts only access tokens whose aud names its API (hr-api).
+      if (!user.access_token || user.expired) {
         return {};
       }
-      return { Authorization: `Bearer ${bearer}` };
+      return { Authorization: `Bearer ${user.access_token}` };
     });
     installSessionSync();
     return;

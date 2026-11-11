@@ -240,15 +240,15 @@ function RetentionSection({ form, errs, byDen, setIn }: {
           Delete personal data automatically
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Setting label="Applicants (months)" error={errs['retention.applicant_months']} hint="Applicants untouched this long are deleted.">
-            <input type="number" min={1} max={120} className={numCls} value={r.applicant_months} onChange={(e) => setIn('applicant_months', Number(e.target.value))} />
+          <Setting label="Applicants (days)" error={errs['retention.applicant_days']} hint="Applicants untouched this long are deleted.">
+            <input type="number" min={1} max={3650} className={numCls} value={r.applicant_days} onChange={(e) => setIn('applicant_days', Number(e.target.value))} />
           </Setting>
-          <Setting label="Paused people (months)" error={errs['retention.paused_months']} hint="People paused this long are offboarded.">
-            <input type="number" min={1} max={120} className={numCls} value={r.paused_months} onChange={(e) => setIn('paused_months', Number(e.target.value))} />
+          <Setting label="Paused people (days)" error={errs['retention.paused_days']} hint="People paused this long are offboarded.">
+            <input type="number" min={1} max={3650} className={numCls} value={r.paused_days} onChange={(e) => setIn('paused_days', Number(e.target.value))} />
           </Setting>
-          <Setting label="Access history after offboarding (months)" error={errs['retention.offboarded_audit_months']} hint="Who granted or removed what.">
-            <input type="number" min={1} max={120} className={numCls} value={r.offboarded_audit_months}
-              onChange={(e) => setIn('offboarded_audit_months', Number(e.target.value))} />
+          <Setting label="Access history after offboarding (days)" error={errs['retention.offboarded_audit_days']} hint="Who granted or removed what.">
+            <input type="number" min={1} max={3650} className={numCls} value={r.offboarded_audit_days}
+              onChange={(e) => setIn('offboarded_audit_days', Number(e.target.value))} />
           </Setting>
           <Setting label="Warning (days before)" error={errs['retention.warning_days']} hint="Email to HR admins.">
             <input type="number" min={1} max={90} className={numCls} value={r.warning_days} onChange={(e) => setIn('warning_days', Number(e.target.value))} />

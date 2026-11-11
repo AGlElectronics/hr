@@ -13,9 +13,9 @@ export type IdentitySettings = {
 
 export type RetentionSettings = {
   enabled: boolean;
-  applicant_months: number;
-  paused_months: number;
-  offboarded_audit_months: number;
+  applicant_days: number;
+  paused_days: number;
+  offboarded_audit_days: number;
   warning_days: number;
   /** "den" when Den's module settings set retention. */
   managed_by?: 'den';
@@ -28,7 +28,7 @@ export type WorkspaceSettings = {
   org_unit: string;
   delete_after_days: number;
   reminder_days: number;
-  /** False while HR has no Google Workspace client (read-only). */
+  /** False until GOOGLE_WORKSPACE_CREDENTIALS_FILE is set (read-only). */
   available: boolean;
 };
 

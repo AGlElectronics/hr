@@ -1,4 +1,4 @@
-import { UserManager, WebStorageStateStore } from 'oidc-client-ts';
+import { InMemoryWebStorage, UserManager, WebStorageStateStore } from 'oidc-client-ts';
 import { runtimeConfig } from '@/runtime-config';
 
 export function isOidcAuthMode(): boolean {
@@ -33,8 +33,9 @@ export function getUserManager(): UserManager | null {
     automaticSilentRenew: true,
     silent_redirect_uri: `${window.location.origin}/silent-callback.html`,
     monitorSession: true,
-    // Shared by all tabs so a sign-out / user switch reaches every tab (see session.ts).
-    userStore: new WebStorageStateStore({ store: window.localStorage }),
+    // Tokens live in memory only, never in localStorage/sessionStorage; after a
+    // reload the app signs in again silently through the Keycloak session.
+    userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
   });
   return manager;
 }

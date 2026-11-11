@@ -23,6 +23,14 @@ export default tseslint.config(
     },
   },
   {
+    // Plain scripts the HTML files load (no inline scripts under the CSP).
+    files: ['public/**/*.js'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: { window: 'readonly', document: 'readonly', localStorage: 'readonly', parent: 'readonly' },
+    },
+  },
+  {
     ignores: ['dist/**', 'node_modules/**', '*.config.ts', '*.config.js', '*.config.mjs'],
   }
 );
