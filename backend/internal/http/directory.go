@@ -3,23 +3,23 @@ package http
 import (
 	"crypto/subtle"
 	"net/http"
-	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
 	"github.com/AGlElectronics/hr/backend/internal/service"
 )
 
-// DirectoryGroup is one entry of GET /api/internal/directory/groups.
+// DirectoryGroup is one entry of GET /api/internal/directory/groups. Name
+// is always an IdP group, so a module can match it against token groups.
 type DirectoryGroup struct {
-	// Name is the IdP group (departments and their leads) or the access
-	// group's slug (access groups exist only in HR).
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
-	// Kind is department, department_lead or access_group.
+	// Kind is department (a department's group or its lead group) or
+	// access (a group that one or more access groups grant).
 	Kind string `json:"kind"`
-	// Groups are the IdP groups an access group grants (access groups only).
-	Groups []string `json:"groups,omitempty"`
+	// AccessGroups names the HR access groups granting the group (access only).
+	AccessGroups []string `json:"access_groups,omitempty"`
 }
 
 type directoryHandler struct {
@@ -28,15 +28,9 @@ type directoryHandler struct {
 	bundles *service.BundleService
 }
 
-var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
-
-func slugify(s string) string {
-	return strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(s), "-"), "-")
-}
-
 // groups serves other modules (the wiki's share dialog) HR's departments,
-// their lead groups and the access groups. It needs HR_DIRECTORY_TOKEN as
-// a bearer token and is off (404) when that is not set.
+// their lead groups and the IdP groups granted by access groups. It needs
+// HR_DIRECTORY_TOKEN as a bearer token and is off (404) when that is not set.
 func (h *directoryHandler) groups(w http.ResponseWriter, r *http.Request) {
 	if h.token == "" {
 		httperror.Render(w, r, httperror.NotFound("directory"))
@@ -56,20 +50,35 @@ func (h *directoryHandler) groups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]DirectoryGroup, 0, 2*len(depts)+len(bundles))
+	seen := map[string]bool{}
 	for _, d := range depts {
 		out = append(out, DirectoryGroup{Name: d.GroupName, DisplayName: d.Name, Kind: "department"})
+		seen[strings.ToLower(d.GroupName)] = true
 		if d.LeadGroup != "" {
-			out = append(out, DirectoryGroup{Name: d.LeadGroup, DisplayName: d.Name + " (leads)", Kind: "department_lead"})
+			out = append(out, DirectoryGroup{Name: d.LeadGroup, DisplayName: d.Name + " (leads)", Kind: "department"})
+			seen[strings.ToLower(d.LeadGroup)] = true
 		}
 	}
+	access := map[string]int{}
 	for _, b := range bundles {
-		g := DirectoryGroup{Name: slugify(b.Name), DisplayName: b.Name, Kind: "access_group", Groups: []string{}}
 		for _, role := range b.Roles {
-			if role.GroupName != "" {
-				g.Groups = append(g.Groups, role.GroupName)
+			key := strings.ToLower(role.GroupName)
+			if key == "" || seen[key] {
+				continue
+			}
+			i, found := access[key]
+			if !found {
+				i = len(out)
+				access[key] = i
+				out = append(out, DirectoryGroup{Name: role.GroupName, Kind: "access"})
+			}
+			if !slices.Contains(out[i].AccessGroups, b.Name) {
+				out[i].AccessGroups = append(out[i].AccessGroups, b.Name)
 			}
 		}
-		out = append(out, g)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	for _, i := range access {
+		out[i].DisplayName = out[i].Name + " (" + strings.Join(out[i].AccessGroups, ", ") + ")"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": out})
 }

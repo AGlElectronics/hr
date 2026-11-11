@@ -84,10 +84,11 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   connector shows as unavailable; `GOOGLE_WORKSPACE_CREDENTIALS_FILE` is
   read and logged only. See
   [Google Workspace](https://aglelectronics.github.io/con-services/modules/hr/google-workspace/).
-- `GET /api/internal/directory/groups` lists departments, department lead
-  groups and access groups for other modules (the wiki's share dialog). It
-  needs the bearer token `HR_DIRECTORY_TOKEN` (at least 16 characters) and is
-  off when that is not set.
+- `GET /api/internal/directory/groups` lists, for other modules (the wiki's
+  share dialog), the identity provider groups HR manages: each department's
+  group and lead group (`kind: department`) and the groups granted by access
+  groups (`kind: access`). It needs the bearer token `HR_DIRECTORY_TOKEN`
+  (at least 16 characters) and is off when that is not set.
 - Offboarding hooks (`OFFBOARD_HOOKS`) receive `issuer`, `subject` and
   `external_id` (the identity provider's account id; also still sent as
   `idp_user_id`) and `username`.

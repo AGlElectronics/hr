@@ -1,9 +1,12 @@
 package http_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,6 +25,19 @@ func TestDirectoryGroups(t *testing.T) {
 	})
 	do := clientAs(router, "test-hr-admin", "")
 	_, group := createDepartment(t, do, pool, "Directory")
+	// The role's IdP group comes from Stash's role catalog.
+	bundleName, accessGroup := "Directory bundle "+uniqueNick("d"), "stash-volunteer"
+	rec := do(http.MethodPost, "/api/access-bundles", map[string]any{
+		"name": bundleName, "roles": []map[string]string{{"role_name": "stash:volunteer"}},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create bundle %d %s", rec.Code, rec.Body.String())
+	}
+	var bundle struct{ ID string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &bundle)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM access_bundles WHERE id = $1`, bundle.ID)
+	})
 
 	get := func(auth string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/api/internal/directory/groups", nil)
@@ -42,22 +58,27 @@ func TestDirectoryGroups(t *testing.T) {
 		t.Fatalf("dev user: want 401, got %d", rec.Code)
 	}
 
-	rec := get("Bearer " + directoryToken)
+	rec = get("Bearer " + directoryToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d %s", rec.Code, rec.Body.String())
 	}
 	var out struct {
-		Items []hrhttp.DirectoryGroup `json:"items"`
+		Groups []hrhttp.DirectoryGroup `json:"groups"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	kinds := map[string]string{}
-	for _, g := range out.Items {
-		kinds[g.Name] = g.Kind
+	byName := map[string]hrhttp.DirectoryGroup{}
+	for _, g := range out.Groups {
+		byName[g.Name] = g
 	}
-	if kinds[group] != "department" || kinds[group+"-lead"] != "department_lead" {
-		t.Fatalf("department %q and its lead group missing: %+v", group, out.Items)
+	if byName[group].Kind != "department" || byName[group+"-lead"].Kind != "department" {
+		t.Fatalf("department %q and its lead group missing: %+v", group, out.Groups)
+	}
+	access := byName[accessGroup]
+	if access.Kind != "access" || !slices.Contains(access.AccessGroups, bundleName) ||
+		!strings.Contains(access.DisplayName, bundleName) {
+		t.Fatalf("access group's IdP group %q missing: %+v", accessGroup, out.Groups)
 	}
 }
 
