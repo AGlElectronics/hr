@@ -170,6 +170,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	people := &peopleHandler{svc: peopleSvc, lifecycle: lifecycleSvc, chk: chk}
 	drafts := &draftHandler{svc: draftSvc, chk: chk}
 	prov := &provisionHandler{svc: provSvc, chk: chk}
+	auditH := &auditHandler{svc: service.NewAuditService(deps.Pool)}
 
 	require := auth.Require
 	global := auth.RequireGlobal
@@ -226,6 +227,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 			api.With(require(authz.PeopleWrite)).Get("/address/search", checks.addressSearch)
 			api.With(require(authz.PeopleRead)).Get("/dashboard", misc.dashboard)
 			api.With(global(authz.IdPGroupsRead)).Get("/idp/groups", misc.idpGroups)
+			api.With(global(authz.AuditRead)).Get("/audit", auditH.list)
 
 			api.Route("/departments", func(dr chi.Router) {
 				dr.With(require(authz.PeopleRead)).Get("/", depts.list)

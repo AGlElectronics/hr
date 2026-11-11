@@ -30,12 +30,14 @@ func (h *miscHandler) getSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
+// updateSettings applies the fields in the body on top of the current
+// settings, so a client may send only what it changes.
 func (h *miscHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
-	var in service.Settings
-	if !ok(w, r, decodeJSON(r, &in)) {
+	in, err := h.settings.Get(r.Context())
+	if !ok(w, r, err) || !ok(w, r, decodeJSON(r, in)) {
 		return
 	}
-	s, err := h.settings.Update(r.Context(), actorFrom(r), in)
+	s, err := h.settings.Update(r.Context(), actorFrom(r), *in)
 	if !ok(w, r, err) {
 		return
 	}

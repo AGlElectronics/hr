@@ -522,8 +522,10 @@ func (s *LifecycleService) SetStatus(ctx context.Context, actor string, personID
 }
 
 // Offboard deletes the person's account, emails them that it was deleted,
-// and deletes them from HR: profile, onboardings and earlier audit entries.
-// One audit line (login name, who, when) is kept.
+// and deletes them from HR: profile, onboardings and the audit entries
+// about their profile. The access history (AccessHistoryActions) and the
+// offboarding line stay for Retention.OffboardedAuditMonths, then the
+// maintenance job purges them.
 func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID uuid.UUID, in OffboardInput) (*OffboardResult, error) {
 	in.Reason = strings.TrimSpace(in.Reason)
 	if in.Reason == "" {
@@ -555,10 +557,23 @@ func (s *LifecycleService) Offboard(ctx context.Context, actor string, personID 
 		}
 	}
 	username := firstNonEmpty(acc.Person.Username, acc.Person.DisplayName)
+	settings, err := s.settings.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keepMonths := settings.Retention.OffboardedAuditMonths
 	if err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		// Profile changes go with the person; the access history (who
+		// granted or removed what, when) stays until its purge date.
 		if _, err := tx.Exec(ctx, `
-DELETE FROM audit_events WHERE entity_id = $1
-   OR entity_id IN (SELECT id FROM employment_drafts WHERE person_id = $1)`, personID); err != nil {
+DELETE FROM audit_events
+ WHERE (entity_id = $1 OR entity_id IN (SELECT id FROM employment_drafts WHERE person_id = $1))
+   AND NOT (action = ANY($2))`, personID, AccessHistoryActions); err != nil {
+			return httperror.Internal(err)
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE audit_events SET purge_after = now() + make_interval(months => $2)
+ WHERE entity_id = $1 OR entity_id IN (SELECT id FROM employment_drafts WHERE person_id = $1)`, personID, keepMonths); err != nil {
 			return httperror.Internal(err)
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM employment_drafts WHERE person_id = $1`, personID); err != nil {
@@ -573,6 +588,11 @@ DELETE FROM audit_events WHERE entity_id = $1
 	}
 	if err := s.audit.Record(ctx, actor, "person.offboard", "person", personID, map[string]any{"username": username}); err != nil {
 		return nil, err
+	}
+	if _, err := s.pool.Exec(ctx, `
+UPDATE audit_events SET purge_after = now() + make_interval(months => $2) WHERE entity_id = $1 AND purge_after IS NULL`,
+		personID, keepMonths); err != nil {
+		return nil, httperror.Internal(err)
 	}
 	// Tell the other modules (the wiki orphans their private space). Only
 	// meaningful when the person ever had an IdP account.

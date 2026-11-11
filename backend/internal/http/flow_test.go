@@ -272,18 +272,25 @@ func runLifecycle(t *testing.T, do testClient, pool *pgxpool.Pool, personID, dra
 	if rec.Code != http.StatusOK || off.Username == "" || len(off.Warnings) != 1 {
 		t.Fatalf("offboard %d %s", rec.Code, rec.Body.String())
 	}
-	// Offboarding deletes the person; only a minimal audit line remains.
+	// Offboarding deletes the person and their profile history; the access
+	// history stays with a purge date.
 	if rec = do(http.MethodGet, "/api/people/"+personID, nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("offboarded person: want 404, got %d", rec.Code)
 	}
-	var lines int
-	var meta string
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*), COALESCE(max(metadata::text), '') FROM audit_events WHERE entity_id = $1`, personID).Scan(&lines, &meta); err != nil {
+	var lines, unpurged int
+	var actions, meta string
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*), count(*) FILTER (WHERE purge_after IS NULL), string_agg(action, ',' ORDER BY action), string_agg(COALESCE(metadata::text, ''), ' ')
+  FROM audit_events WHERE entity_id = $1`, personID).Scan(&lines, &unpurged, &actions, &meta); err != nil {
 		t.Fatal(err)
 	}
-	if lines != 1 || !strings.Contains(meta, off.Username) || strings.Contains(meta, "@") {
-		t.Fatalf("audit after offboard: %d lines, %s", lines, meta)
+	if actions != "person.access.change,person.offboard,person.status.active,person.status.paused" || unpurged != 0 ||
+		!strings.Contains(meta, off.Username) || strings.Contains(meta, "@") {
+		t.Fatalf("audit after offboard: %d lines (%d without purge date): %s / %s", lines, unpurged, actions, meta)
+	}
+	rec = do(http.MethodGet, "/api/audit?entity_id="+personID+"&action=person.", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":4`) {
+		t.Fatalf("audit API %d %s", rec.Code, rec.Body.String())
 	}
 	if rec = do(http.MethodPost, "/api/people/"+personID+"/offboard", map[string]any{"reason": "again"}); rec.Code != http.StatusNotFound {
 		t.Fatalf("second offboard: want 404, got %d", rec.Code)
