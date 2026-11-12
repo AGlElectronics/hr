@@ -20,58 +20,6 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   empty until HR has personal to-dos. Not paired answers 404; a wrong
   credential answers 401.
 
-### Changed
-
-- **BREAKING:** Sign-in defaults are now `AUTH_MODE=oidc` and
-  `APP_ENV=production`. `AUTH_MODE=dev` is refused unless
-  `APP_ENV=development` (Docker Compose and `.env.example` set
-  `development`). The API accepts only access tokens whose audience is
-  `OIDC_AUDIENCE` (default `hr-api`) and refuses ID tokens. The web app
-  keeps tokens in memory and sends the access token; after a reload it
-  signs in again silently. Set `OIDC_AUDIENCE=hr-api` and confirm the
-  Keycloak audience mapper on `hr-spa` adds `hr-api` to the access token.
-- **BREAKING:** HR groups are matched with `OIDC_GROUP_MATCH` (default
-  `full`), `OIDC_GROUP_PREFIX` and only the claim `OIDC_GROUPS_CLAIM`
-  (default `groups`). A grant stored as a full path no longer matches a
-  token that carries only the last segment unless `OIDC_GROUP_MATCH=last`.
-- **BREAKING:** Retention periods are stored and edited in days
-  (`retention.applicant_days`, `retention.paused_days`,
-  `retention.offboarded_audit_days`; defaults 180, 730 and 365). A
-  migration converts existing `*_months` rows (days = months × 365 / 12,
-  rounded). Den's `retention.inactive_users_days` overrides applicants and
-  paused people, and `retention.offboarded_volunteers_days` overrides the
-  access history, when the value is greater than 0.
-- **BREAKING:** `GET /api/role-catalog` on other modules needs
-  `HR_SERVICE_TOKEN` (at least 32 characters, the same value on HR and on
-  Wiki, Finance, Rally, Tasks, Stash, Learn and Desk). HR sends it as a
-  bearer token, honours `ETag` / `304`, and keeps `revision`, `privileged`,
-  `dynamic` and `group_display`. HR publishes its own catalog on the same
-  contract. Generate one with `openssl rand -hex 32` and put it in each
-  module's secret.
-- The Den card shows a revoked credential and **Pair again**. The stored
-  link keeps `den_link.revoked_at` (migration, and `denlink`'s own upgrade).
-- Den's SMTP module setting is used while HR is paired, when Den sets
-  `smtp.host`. When Den also sets `password_set`, the password is fetched
-  from Den for that send and is not stored in HR. `SMTP_PASSWORD` is used
-  only when Den sets no mail server. `smtp.security` of `starttls`, `tls`
-  or `none` is honoured.
-- The Google Workspace connector uses the shared client when
-  `GOOGLE_WORKSPACE_CREDENTIALS_FILE` is set: accounts for everyone,
-  department groups, suspend on offboarding, and deletion after
-  **Delete after** days with an email **Reminder** days before. Without
-  the key file the connector stays unavailable.
-- The web app's nginx applies the shared security headers only on the
-  pages it serves. Origins come from `KEYCLOAK_ORIGIN`, `DEN_ORIGIN`,
-  `S3_ORIGIN` and `EXTRA_CONNECT_SRC`. `EXTRA_FRAME_SRC` stays empty.
-  `/silent-callback.html` is the one page the app may frame itself, so
-  silent sign-in can finish; it sends `frame-ancestors 'self'` and
-  `X-Frame-Options: SAMEORIGIN`. The Helm chart's nginx config includes
-  the same location. Every other response stays unframeable.
-  Address search is proxied through HR, so the browser's `connect-src
-  'self'` covers Photon; the backend is allowed to call `photon.komoot.io`.
-
-### Added
-
 - Register of volunteers and staff, with onboarding (details, department,
   which access they get), pausing, reactivation, banning and offboarding.
   HR creates or removes the sign-in accounts in Keycloak and triggers the
@@ -214,6 +162,62 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 - CI on every pull request (tests, lint, Trivy scans) and signed images with
   an SBOM published to GHCR on version tags (linux/amd64; linux/arm64
   optional).
+
+### Changed
+
+- The Helm chart's image tags default to `1.0.0-1` (backend, frontend and migrate).
+- Den's backend is admitted by `networkPolicy.den` (on by default) for the role catalog and portal to-dos. `allowFromNamespaces` no longer lists `conservices-den`.
+- `DEN_ALLOWED_HOSTS` is in the configuration reference and `.env.example`. It limits pasted pairing URLs when `DEN_INTERNAL_URL` is empty.
+- CI passes `den-major: "1"`. A release whose MAJOR is not 1 is refused once the shared `ci-v1` tag points at the workflow that has that input. Moving that tag is still a maintainer step.
+- Standalone Compose uses PostgreSQL `postgres:16.15-alpine`.
+- The Helm chart description says CI renders and lints the chart; the first production install is still pending.
+- **BREAKING:** Sign-in defaults are now `AUTH_MODE=oidc` and
+  `APP_ENV=production`. `AUTH_MODE=dev` is refused unless
+  `APP_ENV=development` (Docker Compose and `.env.example` set
+  `development`). The API accepts only access tokens whose audience is
+  `OIDC_AUDIENCE` (default `hr-api`) and refuses ID tokens. The web app
+  keeps tokens in memory and sends the access token; after a reload it
+  signs in again silently. Set `OIDC_AUDIENCE=hr-api` and confirm the
+  Keycloak audience mapper on `hr-spa` adds `hr-api` to the access token.
+- **BREAKING:** HR groups are matched with `OIDC_GROUP_MATCH` (default
+  `full`), `OIDC_GROUP_PREFIX` and only the claim `OIDC_GROUPS_CLAIM`
+  (default `groups`). A grant stored as a full path no longer matches a
+  token that carries only the last segment unless `OIDC_GROUP_MATCH=last`.
+- **BREAKING:** Retention periods are stored and edited in days
+  (`retention.applicant_days`, `retention.paused_days`,
+  `retention.offboarded_audit_days`; defaults 180, 730 and 365). A
+  migration converts existing `*_months` rows (days = months × 365 / 12,
+  rounded). Den's `retention.inactive_users_days` overrides applicants and
+  paused people, and `retention.offboarded_volunteers_days` overrides the
+  access history, when the value is greater than 0.
+- **BREAKING:** `GET /api/role-catalog` on other modules needs
+  `HR_SERVICE_TOKEN` (at least 32 characters, the same value on HR and on
+  Wiki, Finance, Rally, Tasks, Stash, Learn and Desk). HR sends it as a
+  bearer token, honours `ETag` / `304`, and keeps `revision`, `privileged`,
+  `dynamic` and `group_display`. HR publishes its own catalog on the same
+  contract. Generate one with `openssl rand -hex 32` and put it in each
+  module's secret.
+- The Den card shows a revoked credential and **Pair again**. The stored
+  link keeps `den_link.revoked_at` (migration, and `denlink`'s own upgrade).
+- Den's SMTP module setting is used while HR is paired, when Den sets
+  `smtp.host`. When Den also sets `password_set`, the password is fetched
+  from Den for that send and is not stored in HR. `SMTP_PASSWORD` is used
+  only when Den sets no mail server. `smtp.security` of `starttls`, `tls`
+  or `none` is honoured.
+- The Google Workspace connector uses the shared client when
+  `GOOGLE_WORKSPACE_CREDENTIALS_FILE` is set: accounts for everyone,
+  department groups, suspend on offboarding, and deletion after
+  **Delete after** days with an email **Reminder** days before. Without
+  the key file the connector stays unavailable.
+- The web app's nginx applies the shared security headers only on the
+  pages it serves. Origins come from `KEYCLOAK_ORIGIN`, `DEN_ORIGIN`,
+  `S3_ORIGIN` and `EXTRA_CONNECT_SRC`. `EXTRA_FRAME_SRC` stays empty.
+  `/silent-callback.html` is the one page the app may frame itself, so
+  silent sign-in can finish; it sends `frame-ancestors 'self'` and
+  `X-Frame-Options: SAMEORIGIN`. The Helm chart's nginx config includes
+  the same location. Every other response stays unframeable.
+  Address search is proxied through HR, so the browser's `connect-src
+  'self'` covers Photon; the backend is allowed to call `photon.komoot.io`.
 
 ### Security
 
