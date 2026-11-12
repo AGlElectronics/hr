@@ -13,6 +13,13 @@ the images `ghcr.io/aglelectronics/hr-backend`, `hr-frontend` and
 `hr-migrate` are published as `MAJOR.MINOR.PATCH-BUILD`, where `BUILD`
 counts rebuilds of the same version. Rebuilds get no entry here.
 
+### Added
+
+- `GET /api/portal/todos` for Den's portal. Den's backend calls it with
+  HR's pairing credential and the person's issuer and subject. The list is
+  empty until HR has personal to-dos. Not paired answers 404; a wrong
+  credential answers 401.
+
 ### Changed
 
 - **BREAKING:** Sign-in defaults are now `AUTH_MODE=oidc` and
