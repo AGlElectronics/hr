@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/AGlElectronics/hr/backend/internal/audit"
 	"github.com/AGlElectronics/hr/backend/internal/mail"
+	"github.com/AGlElectronics/hr/backend/internal/testdb"
 )
 
 type fakeMailer struct {
@@ -35,16 +35,9 @@ func (m *fakeMailer) Send(_ context.Context, msg mail.Message) error {
 
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("HR_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("HR_TEST_DATABASE_URL not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	// Retention selects every applicant and paused person. A private schema
+	// keeps that from seeing, refreshing, or purging anyone else's rows.
+	return testdb.OpenSchema(t)
 }
 
 // withSetting sets an HR setting for the test and restores it afterwards.
@@ -87,7 +80,8 @@ func exists(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) bool {
 func TestRetentionWarnsThenPurges(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	// Only this test's people may be candidates.
+	// If the pool were ever pointed at a shared database, this keeps every
+	// existing person too new to purge. The people inserted below stay old.
 	if _, err := pool.Exec(ctx, `UPDATE people SET updated_at = now(), paused_at = CASE WHEN paused_at IS NULL THEN NULL ELSE now() END`); err != nil {
 		t.Fatal(err)
 	}

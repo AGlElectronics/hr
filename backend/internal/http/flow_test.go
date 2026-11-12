@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	hrhttp "github.com/AGlElectronics/hr/backend/internal/http"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
+	"github.com/AGlElectronics/hr/backend/internal/testdb"
 )
 
 // People validation against a real Postgres: required email, names without
@@ -410,16 +410,9 @@ func clientAsWithEmail(router http.Handler, user, groups, email string) testClie
 
 func newTestRouter(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config.Config, deps *hrhttp.Deps)) (http.Handler, *pgxpool.Pool) {
 	t.Helper()
-	dsn := os.Getenv("HR_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("HR_TEST_DATABASE_URL not set")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	// Migrates once. A fresh database has no tables, and test order is not
+	// a substitute for that.
+	pool := testdb.Open(t)
 
 	// The stash role catalog every test can assign from.
 	catalogSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

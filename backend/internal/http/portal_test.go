@@ -2,34 +2,24 @@ package http
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 	"github.com/rs/zerolog"
 
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
 	"github.com/AGlElectronics/hr/backend/internal/provisioners"
-	"github.com/AGlElectronics/hr/backend/migrations"
+	"github.com/AGlElectronics/hr/backend/internal/testdb"
 )
 
-// HR_PORTAL_TEST_DATABASE_URL is a PostgreSQL the test may create a schema
-// in. It must not be the tasks database. The schema is dropped afterwards.
-const portalTestEnv = "HR_PORTAL_TEST_DATABASE_URL"
-
 func TestPortalTodos(t *testing.T) {
-	pool := portalTestPool(t)
+	// Pairing lives in den_link, a singleton. A private schema keeps that
+	// row out of the database the other tests share.
+	pool := testdb.OpenSchema(t)
 	ctx := context.Background()
 	cfg := &config.Config{
 		AppEnv:   "development",
@@ -111,64 +101,4 @@ func hrRouter(t *testing.T, pool *pgxpool.Pool, cfg *config.Config, den *denlink
 		Config: cfg, Pool: pool, Logger: zerolog.Nop(), Den: den,
 		IDP: provisioners.NewFakeIDP(zerolog.Nop()),
 	}, "test")
-}
-
-func portalTestPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	base := os.Getenv(portalTestEnv)
-	if base == "" {
-		t.Skip(portalTestEnv + " not set")
-	}
-	ctx := context.Background()
-	schema := "hr_portal_" + strings.ReplaceAll(uuid.NewString()[:13], "-", "")
-	admin, err := pgxpool.New(ctx, base)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	if _, err := admin.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public`); err != nil {
-		admin.Close()
-		t.Fatalf("pgcrypto: %v", err)
-	}
-	if _, err := admin.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
-		admin.Close()
-		t.Fatalf("create schema: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = admin.Exec(context.Background(), `DROP SCHEMA `+schema+` CASCADE`)
-		admin.Close()
-	})
-	dsn, err := withPortalSearchPath(base, schema)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	goose.SetBaseFS(migrations.FS)
-	goose.SetLogger(goose.NopLogger())
-	if err := goose.SetDialect("postgres"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpContext(ctx, db, "."); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-func withPortalSearchPath(dsn, schema string) (string, error) {
-	u, err := url.Parse(dsn)
-	if err != nil || u.Scheme == "" {
-		return "", fmt.Errorf("%s must be a postgres:// URL", portalTestEnv)
-	}
-	q := u.Query()
-	q.Set("search_path", schema)
-	u.RawQuery = q.Encode()
-	return u.String(), nil
 }

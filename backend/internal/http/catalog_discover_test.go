@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +19,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/catalog"
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
+	"github.com/AGlElectronics/hr/backend/internal/testdb"
 )
 
 func TestDiscoverIgnoresNotPaired(t *testing.T) {
@@ -40,16 +40,8 @@ func TestDiscoverIgnoresNotPaired(t *testing.T) {
 // failed call is logged without dropping the override list. The access
 // catalog route uses the same hook.
 func TestDiscoverRoleCatalogs(t *testing.T) {
-	dsn := os.Getenv("HR_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("HR_TEST_DATABASE_URL not set")
-	}
+	pool := testdb.Open(t)
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
 	restoreDenLink(t, pool)
 	restoreCatalogCache(t, pool, "desk", "learn", "stash")
 
