@@ -109,7 +109,7 @@ func hrRouter(t *testing.T, pool *pgxpool.Pool, cfg *config.Config, den *denlink
 	t.Helper()
 	return NewRouter(Deps{
 		Config: cfg, Pool: pool, Logger: zerolog.Nop(), Den: den,
-		IdP: provisioners.NewFakeIdP(zerolog.Nop()),
+		IDP: provisioners.NewFakeIDP(zerolog.Nop()),
 	}, "test")
 }
 

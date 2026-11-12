@@ -15,7 +15,7 @@ const key ctxKey = 1
 // Actor is the authenticated caller.
 type Actor struct {
 	Username string
-	// Issuer and Subject identify the person at the IdP (Den keys shared
+	// Issuer and Subject identify the person at the IDP (Den keys shared
 	// preferences on them). Dev mode uses issuer "dev:" like Den.
 	Issuer, Subject string
 	// Email and EmailVerified come from the token (self-service form).

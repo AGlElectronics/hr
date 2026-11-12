@@ -12,7 +12,7 @@ import (
 )
 
 // DirectoryGroup is one entry of GET /api/internal/directory/groups. Name
-// is always an IdP group, so a module can match it against token groups.
+// is always an IDP group, so a module can match it against token groups.
 type DirectoryGroup struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
@@ -30,7 +30,7 @@ type directoryHandler struct {
 }
 
 // groups serves other modules (the wiki's share dialog) HR's departments,
-// their lead groups and the IdP groups granted by access groups. It needs
+// their lead groups and the IDP groups granted by access groups. It needs
 // HR_DIRECTORY_TOKEN as a bearer token and is off (404) when that is not set.
 func (h *directoryHandler) groups(w http.ResponseWriter, r *http.Request) {
 	if h.token == "" {

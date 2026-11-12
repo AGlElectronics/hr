@@ -64,13 +64,13 @@ func TestRoleGating(t *testing.T) {
 	defer srv.Close()
 
 	var gate *service.RoleGateService
-	var idp *provisioners.FakeIdP
+	var idp *provisioners.FakeIDP
 	do, pool := newTestClientWith(t, func(pool *pgxpool.Pool, cfg *config.Config, deps *hrhttp.Deps) {
 		cfg.QualificationCatalogSources = "learn=" + srv.URL + "/api/qualification-catalog"
 		cfg.LearnHoldingsURL = srv.URL + "/api/internal/holdings"
 		cfg.LearnServiceToken = "learn-test-token"
-		idp = provisioners.NewFakeIdP(zerolog.Nop())
-		deps.IdP = idp
+		idp = provisioners.NewFakeIDP(zerolog.Nop())
+		deps.IDP = idp
 		gate = hrhttp.NewRoleGate(cfg, pool, idp, zerolog.Nop())
 		deps.RoleGate = gate
 	})

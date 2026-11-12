@@ -19,11 +19,11 @@ Every external system HR speaks to is accessed through an **interface** in
 `internal/provisioners`. Service code holds the interface, never a vendor
 type.
 
-- **Identity provider.** `IdPProvisioner` creates or links accounts and sets
+- **Identity provider.** `IDPProvisioner` creates or links accounts and sets
   groups; smaller interfaces (`AccountManager`, `Directory`, `UserScanner`,
   `GroupEnsurer`, `PasswordSetupSender`, `UsernameDirectory`) add what only
   some implementations offer, and services check for them with a type
-  assertion. The real implementation is `KeycloakIdP` (Admin API through a
+  assertion. The real implementation is `KeycloakIDP` (Admin API through a
   service-account client). `IDP_PROVISIONER_MODE` chooses `manage` (HR owns
   accounts), `link` (HR finds existing accounts and never creates or deletes
   them) or `off` (no connector; HR keeps records only).
@@ -33,7 +33,7 @@ type.
   tested against `FakeWorkspace`. The real HTTP client is not part of HR; it
   is plugged in from the shared Go package (`shared/go/gworkspace`) through a
   `WorkspaceFactory`. Until then the connector reports itself unavailable.
-- **Fakes are for tests only.** `FakeIdP` and `FakeWorkspace` run in-process
+- **Fakes are for tests only.** `FakeIDP` and `FakeWorkspace` run in-process
   and are deterministic. Outside `APP_ENV=development` HR refuses to start
   rather than fall back to the fake identity provider, and it never records a
   fake job as succeeded.

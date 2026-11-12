@@ -23,13 +23,13 @@ import (
 )
 
 // LifecycleService handles people after onboarding: changing access,
-// pausing, and offboarding. Every change is mirrored to the IdP.
+// pausing, and offboarding. Every change is mirrored to the IDP.
 type LifecycleService struct {
 	pool     *pgxpool.Pool
 	people   *PeopleService
 	drafts   *DraftService
 	depts    *DepartmentService
-	accounts provisioners.AccountManager // nil when the IdP cannot manage accounts
+	accounts provisioners.AccountManager // nil when the IDP cannot manage accounts
 	mailer   mail.Sender                 // nil when email is not configured
 	settings *SettingsService
 	audit    *audit.Writer
@@ -115,9 +115,9 @@ type OffboardHookPayload struct {
 	Issuer  string `json:"issuer"`
 	Subject string `json:"subject"`
 	// ExternalID is the account id in the identity provider (Keycloak user
-	// id); IdPUserID is the same value under its older name.
+	// id); IDPUserID is the same value under its older name.
 	ExternalID string `json:"external_id"`
-	IdPUserID  string `json:"idp_user_id"`
+	IDPUserID  string `json:"idp_user_id"`
 	Username   string `json:"username"`
 }
 
@@ -126,7 +126,7 @@ type OffboardHookPayload struct {
 func (s *LifecycleService) notifyOffboardHooks(ctx context.Context, subject, idpUserID, username string) []string {
 	var warnings []string
 	for _, h := range s.hooks {
-		body, _ := json.Marshal(OffboardHookPayload{Issuer: s.issuer, Subject: subject, ExternalID: idpUserID, IdPUserID: idpUserID, Username: username})
+		body, _ := json.Marshal(OffboardHookPayload{Issuer: s.issuer, Subject: subject, ExternalID: idpUserID, IDPUserID: idpUserID, Username: username})
 		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		req, err := http.NewRequestWithContext(hctx, http.MethodPost, h.URL, bytes.NewReader(body))
 		if err != nil {
@@ -170,11 +170,11 @@ type PersonAccess struct {
 	Onboardings []domain.EmploymentDraft `json:"onboardings"`
 }
 
-// AccountState describes the person's IdP login as HR last saw it.
+// AccountState describes the person's IDP login as HR last saw it.
 type AccountState struct {
 	// State is none (never provisioned), linked, missing (the stored id no
-	// longer exists in the IdP), deleted (removed by offboarding) or
-	// unreachable (the IdP could not be asked).
+	// longer exists in the IDP), deleted (removed by offboarding) or
+	// unreachable (the IDP could not be asked).
 	State    string `json:"state"`
 	Username string `json:"username,omitempty"`
 	Enabled  bool   `json:"enabled"`
@@ -188,7 +188,7 @@ type OffboardResult struct {
 	Warnings []string `json:"warnings"`
 }
 
-// idpFailure turns an IdP error into a message HR can act on.
+// idpFailure turns an IDP error into a message HR can act on.
 func idpFailure(action string, err error) error {
 	var netErr net.Error
 	var adminErr *provisioners.AdminError
@@ -247,7 +247,7 @@ type OffboardInput struct {
 	Reason string `json:"reason"`
 	// ShareReason includes the reason in the email to the person.
 	ShareReason bool `json:"share_reason,omitempty"`
-	// HROnly skips the IdP entirely (e.g. Keycloak is down); HR must then
+	// HROnly skips the IDP entirely (e.g. Keycloak is down); HR must then
 	// delete the account by hand.
 	HROnly bool `json:"hr_only,omitempty"`
 }
@@ -287,7 +287,7 @@ func (s *LifecycleService) externalID(ctx context.Context, personID uuid.UUID) (
 	return latestExternalID(ctx, s.pool, personID)
 }
 
-// latestExternalID is the person's IdP user id ("" when they have no linked
+// latestExternalID is the person's IDP user id ("" when they have no linked
 // account).
 func latestExternalID(ctx context.Context, pool *pgxpool.Pool, personID uuid.UUID) (string, error) {
 	var ext string
@@ -301,7 +301,7 @@ func latestExternalID(ctx context.Context, pool *pgxpool.Pool, personID uuid.UUI
 	return ext, nil
 }
 
-// linkAccount stores the IdP user id (and subject, if not known yet) on the
+// linkAccount stores the IDP user id (and subject, if not known yet) on the
 // person.
 func linkAccount(ctx context.Context, pool *pgxpool.Pool, personID uuid.UUID, userID, subject string) error {
 	if subject == "" {
@@ -370,7 +370,7 @@ func membershipGroups(ms []Membership, skip uuid.UUID) map[string]bool {
 }
 
 // ChangeAccess replaces the roles of one completed membership and syncs the
-// IdP groups (adds new ones, removes ones no other membership still needs).
+// IDP groups (adds new ones, removes ones no other membership still needs).
 func (s *LifecycleService) ChangeAccess(ctx context.Context, actor string, personID uuid.UUID, in ChangeAccessInput) (*PersonAccess, error) {
 	acc, err := s.Access(ctx, personID)
 	if err != nil {
@@ -420,7 +420,7 @@ func (s *LifecycleService) ResyncBundle(ctx context.Context, actor string, draft
 }
 
 // applyAccess replaces a membership's roles and access groups and syncs the
-// IdP groups (adds new ones, removes ones no other membership still needs).
+// IDP groups (adds new ones, removes ones no other membership still needs).
 // trusted skips the "assign admin roles" check (bundle syncs).
 func (s *LifecycleService) applyAccess(ctx context.Context, actor string, acc *PersonAccess, target *Membership, roles []RolePlanInput, bundleIDs []uuid.UUID, trusted bool, action string) (*PersonAccess, error) {
 	personID := acc.Person.ID
@@ -587,7 +587,7 @@ func AccountChangedNotice(org string, p *domain.Person, renamed, orgChanged bool
 }
 
 // StatusResult is the person after a status or ban change, plus anything HR
-// could not do in the IdP.
+// could not do in the IDP.
 type StatusResult struct {
 	*domain.Person
 	Warnings []string `json:"warnings"`
@@ -596,13 +596,13 @@ type StatusResult struct {
 // setLogin enables or disables the person's account. Link mode never
 // disables accounts in the convention's realm.
 func (s *LifecycleService) setLogin(ctx context.Context, p *domain.Person, enabled bool) []string {
-	if s.accounts == nil || p.IdPUserID == "" {
+	if s.accounts == nil || p.IDPUserID == "" {
 		return []string{}
 	}
 	if s.linkOnly {
 		return []string{"This installation links to the convention's own accounts (link mode), so HR did not disable or enable the account."}
 	}
-	err := s.accounts.SetEnabled(ctx, p.IdPUserID, enabled)
+	err := s.accounts.SetEnabled(ctx, p.IDPUserID, enabled)
 	switch {
 	case errors.Is(err, provisioners.ErrAccountNotFound):
 		return []string{"Their account no longer exists in the identity provider."}
@@ -645,7 +645,7 @@ func (s *LifecycleService) SetStatus(ctx context.Context, actor string, personID
 	return &StatusResult{Person: p, Warnings: warnings}, nil
 }
 
-// LinkAccount links an existing IdP account to a person (review queue
+// LinkAccount links an existing IDP account to a person (review queue
 // merge): HR writes hrPersonId and the groups of the person's memberships.
 func (s *LifecycleService) LinkAccount(ctx context.Context, actor string, personID uuid.UUID, userID, subject string) ([]string, error) {
 	if err := linkAccount(ctx, s.pool, personID, userID, subject); err != nil {
@@ -739,14 +739,14 @@ func (s *LifecycleService) ResendPasswordSetup(ctx context.Context, actor string
 	}
 	sender, ok := s.accounts.(provisioners.PasswordSetupSender)
 	switch {
-	case p.IdPUserID == "":
+	case p.IDPUserID == "":
 		return httperror.Conflict("this person has no account yet")
 	case s.linkOnly:
 		return httperror.Conflict("this installation links to the convention's own accounts; passwords are managed there")
 	case !ok:
 		return httperror.Conflict("the identity provider cannot send set-password emails")
 	}
-	if err := sender.SendPasswordSetup(ctx, p.IdPUserID); err != nil {
+	if err := sender.SendPasswordSetup(ctx, p.IDPUserID); err != nil {
 		if errors.Is(err, provisioners.ErrAccountNotFound) {
 			return httperror.Conflict("their account no longer exists in the identity provider")
 		}
@@ -851,9 +851,9 @@ UPDATE audit_events SET purge_after = now() + make_interval(days => $2) WHERE en
 		}
 	}
 	// Tell the other modules (the wiki orphans their private space). Only
-	// meaningful when the person ever had an IdP account.
+	// meaningful when the person ever had an IDP account.
 	if acc.ExternalID != "" {
-		warnings = append(warnings, s.notifyOffboardHooks(ctx, firstNonEmpty(acc.Person.IdPSubject, acc.ExternalID), acc.ExternalID, username)...)
+		warnings = append(warnings, s.notifyOffboardHooks(ctx, firstNonEmpty(acc.Person.IDPSubject, acc.ExternalID), acc.ExternalID, username)...)
 	}
 	return &OffboardResult{Username: username, Warnings: warnings}, nil
 }

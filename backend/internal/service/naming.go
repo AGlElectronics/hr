@@ -106,12 +106,7 @@ func UsernameFor(tpl string, p *domain.Person) string {
 	return ""
 }
 
-// templateUses reports whether a template reads the given placeholder.
-func templateUses(tpl, token string) bool {
-	return strings.Contains(tpl, token)
-}
-
-// personAttributes are the profile fields HR mirrors onto the IdP account.
+// personAttributes are the profile fields HR mirrors onto the IDP account.
 func personAttributes(p *domain.Person) map[string]string {
 	return map[string]string{
 		provisioners.AttrNickname:     p.Nickname,

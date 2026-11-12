@@ -1,7 +1,7 @@
 // Package authz holds HR's own permission model.
 //
 // Fine-grained permissions are bundled into three published roles, granted
-// by IdP groups (HR_ADMIN_GROUPS, HR_VIEWER_GROUPS, HR_LEAD_GROUPS):
+// by IDP groups (HR_ADMIN_GROUPS, HR_VIEWER_GROUPS, HR_LEAD_GROUPS):
 //
 //	admin   every permission, everywhere
 //	viewer  read-only, everywhere
@@ -48,7 +48,7 @@ const (
 	AuditRead          Permission = "audit.read"
 	ReviewManage       Permission = "review.manage"
 	ImportRun          Permission = "import.run"
-	IdPGroupsRead      Permission = "idp.groups.read"
+	IDPGroupsRead      Permission = "idp.groups.read"
 	WorkspaceManage    Permission = "workspace.manage"
 )
 
@@ -62,7 +62,7 @@ const (
 var allPermissions = []Permission{
 	PeopleRead, PeopleCreate, PeopleWrite, PeoplePause, PeopleOffboard, AccessManage, AssignPrivileged,
 	OnboardingManage, DepartmentsManage, SettingsManage, BundlesManage, DenManage, RequirementsManage,
-	RequirementsDelete, TrainingOverride, AuditRead, ReviewManage, ImportRun, IdPGroupsRead, WorkspaceManage,
+	RequirementsDelete, TrainingOverride, AuditRead, ReviewManage, ImportRun, IDPGroupsRead, WorkspaceManage,
 }
 
 // global permissions apply to everything; scoped ones only inside the
@@ -70,7 +70,7 @@ var allPermissions = []Permission{
 var (
 	globalPerms = map[string][]Permission{
 		RoleAdmin:  allPermissions,
-		RoleViewer: {PeopleRead, AuditRead, IdPGroupsRead},
+		RoleViewer: {PeopleRead, AuditRead, IDPGroupsRead},
 	}
 	scopedPerms = map[string][]Permission{
 		RoleLead: {PeopleRead, PeopleWrite, PeoplePause, AccessManage, OnboardingManage, TrainingOverride, ReviewManage, RequirementsDelete},

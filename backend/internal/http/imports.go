@@ -31,7 +31,7 @@ func upload(w http.ResponseWriter, r *http.Request) (name string, data []byte, o
 		httperror.Render(w, r, httperror.Validation("validation failed", map[string]string{"file": "required"}))
 		return "", nil, opts, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err = io.ReadAll(io.LimitReader(f, importer.MaxBytes+1))
 	if err != nil {
 		httperror.Render(w, r, httperror.BadRequest(err.Error()))

@@ -44,7 +44,7 @@ const (
 	// ProvisionerLink only finds existing accounts and manages membership of
 	// HR's groups; it never creates, renames or deletes accounts or groups.
 	ProvisionerLink = "link"
-	// ProvisionerOff keeps records in HR only; no IdP is touched.
+	// ProvisionerOff keeps records in HR only; no IDP is touched.
 	ProvisionerOff = "off"
 )
 
@@ -83,7 +83,7 @@ type Config struct {
 	OIDCIssuerURL string
 	OIDCClientID  string
 	OIDCAudience  string
-	// AdminGroups, ViewerGroups and LeadGroups are the IdP groups that grant
+	// AdminGroups, ViewerGroups and LeadGroups are the IDP groups that grant
 	// the HR roles admin, viewer (read-only) and lead (department lead).
 	// They are compared with GroupMatch, never with ==.
 	AdminGroups  []string
@@ -99,7 +99,7 @@ type Config struct {
 	// ProvisionerMode is IDP_PROVISIONER_MODE: manage, link or off.
 	ProvisionerMode string
 
-	// Keycloak Admin API (IdP provisioner). Required in manage and link mode
+	// Keycloak Admin API (IDP provisioner). Required in manage and link mode
 	// outside development.
 	KeycloakBaseURL      string
 	KeycloakRealm        string
@@ -123,7 +123,7 @@ type Config struct {
 	// JobInterval is how often the job worker looks for due jobs (it also
 	// wakes when a job is queued). MaintenanceInterval runs retention, purges,
 	// stuck-onboarding recovery and Workspace clean-up. ReviewScanInterval
-	// scans the IdP for accounts without an HR record (0: off).
+	// scans the IDP for accounts without an HR record (0: off).
 	JobInterval         time.Duration
 	MaintenanceInterval time.Duration
 	ReviewScanInterval  time.Duration
@@ -385,7 +385,7 @@ func (c *Config) devSecretsInUse() []string {
 	return out
 }
 
-// KeycloakConfigured reports whether real IdP provisioning should be wired.
+// KeycloakConfigured reports whether real IDP provisioning should be wired.
 func (c *Config) KeycloakConfigured() bool {
 	return c.KeycloakBaseURL != "" && c.KeycloakClientSecret != ""
 }

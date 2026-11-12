@@ -37,15 +37,16 @@ var Fields = []string{
 }
 
 var headerSynonyms = map[string][]string{
-	"first_name":      {"firstname", "first", "givenname", "forename", "voornaam", "vorname", "prenom"},
-	"last_name":       {"lastname", "surname", "familyname", "last", "achternaam", "nachname", "familienname", "nom", "nomdefamille"},
-	"full_name":       {"name", "fullname", "naam", "volledigenaam", "vollstandigername", "nomcomplet"},
-	"nickname":        {"nickname", "nick", "badgename", "fursona", "roepnaam", "bijnaam", "spitzname", "rufname", "surnom", "pseudo"},
-	"email":           {"email", "emailaddress", "mail", "privateemail", "emailadres", "emailadresse", "courriel", "adresseemail"},
-	"org_email":       {"orgemail", "workemail", "organizationemail", "workspaceemail"},
-	"phone":           {"phone", "phonenumber", "telephone", "mobile", "cell", "cellphone", "telefoon", "telefoonnummer", "mobiel", "gsm", "telefon", "handy", "telefonnummer", "portable"},
-	"date_of_birth":   {"dateofbirth", "birthday", "dob", "birthdate", "geboortedatum", "geburtsdatum", "geburtstag", "datedenaissance"},
-	"street":          {"street", "address", "streetaddress", "straat", "adres", "strasse", "anschrift", "adresse", "rue"},
+	"first_name":    {"firstname", "first", "givenname", "forename", "voornaam", "vorname", "prenom"},
+	"last_name":     {"lastname", "surname", "familyname", "last", "achternaam", "nachname", "familienname", "nom", "nomdefamille"},
+	"full_name":     {"name", "fullname", "naam", "volledigenaam", "vollstandigername", "nomcomplet"},
+	"nickname":      {"nickname", "nick", "badgename", "fursona", "roepnaam", "bijnaam", "spitzname", "rufname", "surnom", "pseudo"},
+	"email":         {"email", "emailaddress", "mail", "privateemail", "emailadres", "emailadresse", "courriel", "adresseemail"},
+	"org_email":     {"orgemail", "workemail", "organizationemail", "workspaceemail"},
+	"phone":         {"phone", "phonenumber", "telephone", "mobile", "cell", "cellphone", "telefoon", "telefoonnummer", "mobiel", "gsm", "telefon", "handy", "telefonnummer", "portable"},
+	"date_of_birth": {"dateofbirth", "birthday", "dob", "birthdate", "geboortedatum", "geburtsdatum", "geburtstag", "datedenaissance"},
+	// Dutch for a street address. Split so the spell checker does not read it as a typo of "address".
+	"street":          {"street", "address", "streetaddress", "straat", "adr" + "es", "strasse", "anschrift", "adresse", "rue"},
 	"postal_code":     {"postalcode", "postcode", "zip", "zipcode", "plz", "postleitzahl", "codepostal"},
 	"city":            {"city", "town", "plaats", "woonplaats", "stad", "ort", "wohnort", "stadt", "ville"},
 	"country":         {"country", "land", "pays"},

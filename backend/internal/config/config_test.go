@@ -71,7 +71,7 @@ func TestValidateProvisionerMode(t *testing.T) {
 	}
 	c.AppEnv, c.ProvisionerMode = "development", ProvisionerManage
 	if err := c.validate(nil); err != nil {
-		t.Fatalf("development may run without Keycloak (fake IdP): %v", err)
+		t.Fatalf("development may run without Keycloak (fake IDP): %v", err)
 	}
 }
 

@@ -17,12 +17,12 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/service"
 )
 
-func fakeIdPRouter(t *testing.T) (http.Handler, *pgxpool.Pool, *provisioners.FakeIdP, *service.JobQueue) {
+func fakeIDPRouter(t *testing.T) (http.Handler, *pgxpool.Pool, *provisioners.FakeIDP, *service.JobQueue) {
 	t.Helper()
-	idp := provisioners.NewFakeIdP(zerolog.Nop())
+	idp := provisioners.NewFakeIDP(zerolog.Nop())
 	var jobs *service.JobQueue
 	router, pool := newTestRouter(t, func(pool *pgxpool.Pool, _ *config.Config, deps *hrhttp.Deps) {
-		deps.IdP = idp
+		deps.IDP = idp
 		jobs = service.NewJobQueue(pool, zerolog.Nop(), true)
 		deps.Jobs = jobs
 	})
@@ -32,7 +32,7 @@ func fakeIdPRouter(t *testing.T) (http.Handler, *pgxpool.Pool, *provisioners.Fak
 // TestPauseAndBanDisableTheAccount: pausing and banning disable the login,
 // reactivating enables it again unless the person is banned.
 func TestPauseAndBanDisableTheAccount(t *testing.T) {
-	router, pool, idp, _ := fakeIdPRouter(t)
+	router, pool, idp, _ := fakeIDPRouter(t)
 	admin := clientAs(router, "test-hr-admin", "")
 	dept, _ := createDepartment(t, admin, pool, "Pause")
 	person, draft := startOnboarding(t, admin, pool, dept, "Paula")
@@ -88,10 +88,10 @@ func TestOffboardHookPayload(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer hook.Close()
-	idp := provisioners.NewFakeIdP(zerolog.Nop())
+	idp := provisioners.NewFakeIDP(zerolog.Nop())
 	router, pool := newTestRouter(t, func(pool *pgxpool.Pool, cfg *config.Config, deps *hrhttp.Deps) {
 		cfg.OffboardHooks = hook.URL + "|hook-test-token"
-		deps.IdP = idp
+		deps.IDP = idp
 		deps.Jobs = service.NewJobQueue(pool, zerolog.Nop(), true)
 	})
 	admin := clientAs(router, "test-hr-admin", "")
@@ -105,7 +105,7 @@ func TestOffboardHookPayload(t *testing.T) {
 		t.Fatalf("offboard %d %s", rec.Code, rec.Body.String())
 	}
 	p := <-got
-	if p.Issuer != "dev:" || p.Subject != "sub-hanna" || p.ExternalID != "idp:"+person || p.IdPUserID != p.ExternalID || p.Username == "" {
+	if p.Issuer != "dev:" || p.Subject != "sub-hanna" || p.ExternalID != "idp:"+person || p.IDPUserID != p.ExternalID || p.Username == "" {
 		t.Fatalf("hook payload: %+v", p)
 	}
 	if auth != "Bearer hook-test-token" {
@@ -116,7 +116,7 @@ func TestOffboardHookPayload(t *testing.T) {
 // TestCancelOnboarding: an onboarding that is still a draft can be
 // cancelled; the person goes back to applicant.
 func TestCancelOnboarding(t *testing.T) {
-	router, pool, _, _ := fakeIdPRouter(t)
+	router, pool, _, _ := fakeIDPRouter(t)
 	admin := clientAs(router, "test-hr-admin", "")
 	dept, _ := createDepartment(t, admin, pool, "Cancel")
 	person, draft := startOnboarding(t, admin, pool, dept, "Carl")
@@ -134,11 +134,11 @@ func TestCancelOnboarding(t *testing.T) {
 	_ = person
 }
 
-// TestProvisioningFailureAndRecovery: a permanent IdP error puts the
+// TestProvisioningFailureAndRecovery: a permanent IDP error puts the
 // onboarding back to draft at once; a job whose worker died on its last
 // attempt is given up and the onboarding recovered.
 func TestProvisioningFailureAndRecovery(t *testing.T) {
-	router, pool, idp, jobs := fakeIdPRouter(t)
+	router, pool, idp, jobs := fakeIDPRouter(t)
 	admin := clientAs(router, "test-hr-admin", "")
 	dept, _ := createDepartment(t, admin, pool, "Fail")
 	_, draft := startOnboarding(t, admin, pool, dept, "Fiona")

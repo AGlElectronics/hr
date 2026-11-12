@@ -34,7 +34,7 @@ const roleGateActor = "system:role-gate"
 // roleGateLockKey guards the worker so only one replica runs a cycle.
 const roleGateLockKey int64 = 0x4852_0006
 
-// HoldingsSource answers which qualifications IdP users currently hold.
+// HoldingsSource answers which qualifications IDP users currently hold.
 type HoldingsSource interface {
 	Holdings(ctx context.Context, subjects []string) (map[string][]qualification.Holding, error)
 }
@@ -87,7 +87,7 @@ type OverrideInput struct {
 type RoleGateService struct {
 	pool     *pgxpool.Pool
 	audit    *audit.Writer
-	accounts provisioners.AccountManager // nil when the IdP cannot change groups
+	accounts provisioners.AccountManager // nil when the IDP cannot change groups
 	holdings HoldingsSource              // nil when gating is off
 	quals    *qualification.Fetcher      // nil-safe; only used for names
 	logger   zerolog.Logger
@@ -430,7 +430,7 @@ UPDATE pending_role_grants SET status = 'overridden', reason = $2, resolved_at =
 // -----------------------------------------------------------------------------
 
 // Split separates roles that can be granted now from roles whose
-// requirements are not met yet. ext is the person's IdP id ("" when they
+// requirements are not met yet. ext is the person's IDP id ("" when they
 // have no account, in which case every gated role waits). When gating is
 // off or Learn cannot be asked, holdings count as empty.
 func (s *RoleGateService) Split(ctx context.Context, ext string, roles []domain.RolePlan) (granted, pending []domain.RolePlan, err error) {

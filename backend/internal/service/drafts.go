@@ -234,7 +234,7 @@ SELECT d.id, d.person_id, d.department_id, d.title, d.start_date, d.end_date, d.
 
 // AssignRoles replaces the role plans attached to a draft. Only legal in
 // the "draft" state — once provisioning starts, role plans are frozen so
-// the audit trail matches what was actually pushed to the IdP.
+// the audit trail matches what was actually pushed to the IDP.
 func (s *DraftService) AssignRoles(ctx context.Context, actor string, draftID uuid.UUID, in AssignRolesInput) ([]domain.RolePlan, error) {
 	return s.assign(ctx, actor, draftID, in, false)
 }

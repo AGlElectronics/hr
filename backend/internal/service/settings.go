@@ -8,12 +8,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/AGlElectronics/hr/backend/internal/audit"
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
 	"github.com/AGlElectronics/hr/backend/internal/httperror"
-	"github.com/google/uuid"
 )
 
 // Settings are HR-wide configuration values editable in the UI.
@@ -56,7 +56,7 @@ type IdentitySettings struct {
 	// SSOName and SSOURL name and link the convention's SSO in that warning.
 	SSOName string `json:"sso_name"`
 	SSOURL  string `json:"sso_url"`
-	// AdminConsoleURL is the IdP admin console ("Open Keycloak").
+	// AdminConsoleURL is the IDP admin console ("Open Keycloak").
 	AdminConsoleURL string `json:"admin_console_url"`
 	// Effective values after applying Den's settings (read-only).
 	Effective *IdentitySettings `json:"effective,omitempty"`

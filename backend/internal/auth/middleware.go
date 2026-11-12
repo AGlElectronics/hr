@@ -87,7 +87,7 @@ func Middleware(cfg *config.Config, oidcVerifier *OIDCVerifier, resolver *authz.
 	}
 }
 
-// RolesFor maps IdP groups to HR roles with OIDC_GROUP_MATCH and
+// RolesFor maps IDP groups to HR roles with OIDC_GROUP_MATCH and
 // OIDC_GROUP_PREFIX (groupmatch).
 func RolesFor(cfg *config.Config, groups []string) []string {
 	var roles []string

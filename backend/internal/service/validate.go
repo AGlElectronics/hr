@@ -135,7 +135,7 @@ func CheckEmail(ctx context.Context, address string) EmailCheck {
 	defer cancel()
 	var r net.Resolver
 	mx, err := r.LookupMX(ctx, dom)
-	if err == nil && len(mx) > 0 && !(len(mx) == 1 && mx[0].Host == ".") {
+	if err == nil && len(mx) > 0 && (len(mx) != 1 || mx[0].Host != ".") {
 		return EmailCheck{Valid: true, Deliverable: boolPtr(true)}
 	}
 	if isNotFound(err) || err == nil {

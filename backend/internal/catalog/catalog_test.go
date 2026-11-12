@@ -43,7 +43,7 @@ func TestFetchSendsTokenAndHonoursETag(t *testing.T) {
 		t.Fatalf("first fetch: %+v", desk)
 	}
 	r := desk.Roles[0]
-	if !r.Dynamic || r.Group != "desk/mailboxes/fundraising" || r.IdPGroup() != "/desk/mailboxes/Fundraising" {
+	if !r.Dynamic || r.Group != "desk/mailboxes/fundraising" || r.IDPGroup() != "/desk/mailboxes/Fundraising" {
 		t.Fatalf("role: %+v", r)
 	}
 	mods = f.FetchAll(context.Background())

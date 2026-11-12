@@ -39,10 +39,10 @@ type Person struct {
 	EmergencyContact EmergencyContact  `json:"emergency_contact"`
 	Status           PersonStatus      `json:"status"`
 	Notes            string            `json:"notes,omitempty"`
-	// IdPUserID is the account's id in the identity provider (Keycloak user
-	// id); IdPSubject is the OIDC `sub` other modules know the person by.
-	IdPUserID  string     `json:"idp_user_id,omitempty"`
-	IdPSubject string     `json:"idp_subject,omitempty"`
+	// IDPUserID is the account's id in the identity provider (Keycloak user
+	// id); IDPSubject is the OIDC `sub` other modules know the person by.
+	IDPUserID  string     `json:"idp_user_id,omitempty"`
+	IDPSubject string     `json:"idp_subject,omitempty"`
 	PausedAt   *time.Time `json:"paused_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
@@ -115,7 +115,7 @@ func (s PersonStatus) Valid() bool {
 }
 
 // Department is an organizational unit volunteers join. Each one is backed by
-// an IdP group (GroupName) and carries the module access new members get by
+// an IDP group (GroupName) and carries the module access new members get by
 // default; HR can adjust per person during onboarding.
 type Department struct {
 	ID           uuid.UUID  `json:"id"`
@@ -124,10 +124,10 @@ type Department struct {
 	Description  string     `json:"description"`
 	GroupName    string     `json:"group_name"`
 	DefaultRoles []RoleRef  `json:"default_roles"`
-	IdPSyncedAt  *time.Time `json:"idp_synced_at,omitempty"`
-	IdPSyncError string     `json:"idp_sync_error,omitempty"`
+	IDPSyncedAt  *time.Time `json:"idp_synced_at,omitempty"`
+	IDPSyncError string     `json:"idp_sync_error,omitempty"`
 	MemberCount  int        `json:"member_count"`
-	// LeadGroup is the IdP group HR gives the department's leads
+	// LeadGroup is the IDP group HR gives the department's leads
 	// ("dept-<slug>-lead"); other modules may use it too.
 	LeadGroup string    `json:"lead_group"`
 	Leads     []LeadRef `json:"leads"`
@@ -146,10 +146,10 @@ type LeadRef struct {
 	DisplayName string    `json:"display_name"`
 }
 
-// LeadGroupFor is the IdP group of a department's leads.
+// LeadGroupFor is the IDP group of a department's leads.
 func LeadGroupFor(deptGroup string) string { return deptGroup + "-lead" }
 
-// RoleRef is a module role reference ("<module>:<key>") plus its IdP group.
+// RoleRef is a module role reference ("<module>:<key>") plus its IDP group.
 type RoleRef struct {
 	RoleName  string `json:"role_name"`
 	GroupName string `json:"group_name,omitempty"`
@@ -179,7 +179,7 @@ type EmploymentDraft struct {
 }
 
 // RolePlan is a desired role / group assignment for a draft. On provisioning
-// each plan produces (or updates) a corresponding IdP group membership.
+// each plan produces (or updates) a corresponding IDP group membership.
 type RolePlan struct {
 	ID        uuid.UUID `json:"id"`
 	DraftID   uuid.UUID `json:"draft_id"`
@@ -197,7 +197,7 @@ type RolePlan struct {
 }
 
 // ProvisioningJob tracks one attempt to push a draft to the external
-// systems (IdP + workspace). Jobs are append-only; retries create new jobs.
+// systems (IDP + workspace). Jobs are append-only; retries create new jobs.
 type ProvisioningJob struct {
 	ID         uuid.UUID       `json:"id"`
 	DraftID    uuid.UUID       `json:"draft_id"`
@@ -254,9 +254,9 @@ func AllDraftStates() []DraftState {
 type ProvisionTarget string
 
 const (
-	// TargetIdP: identity provider (planned: Keycloak). The HR module is
-	// *not* the login source of truth; the IdP is. See ADR-0001.
-	TargetIdP ProvisionTarget = "idp"
+	// TargetIDP: identity provider (planned: Keycloak). The HR module is
+	// *not* the login source of truth; the IDP is. See ADR-0001.
+	TargetIDP ProvisionTarget = "idp"
 	// TargetWorkspace: productivity / collaboration (planned: Google).
 	TargetWorkspace ProvisionTarget = "workspace"
 )

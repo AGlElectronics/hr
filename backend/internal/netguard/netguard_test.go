@@ -61,12 +61,15 @@ func TestClientRefusesInternalAddresses(t *testing.T) {
 	defer srv.Close()
 
 	g, _ := New(nil, false)
-	_, err := g.Client(2 * time.Second).Get(srv.URL)
+	res, err := g.Client(2 * time.Second).Get(srv.URL)
+	if res != nil {
+		_ = res.Body.Close()
+	}
 	if err == nil || !strings.Contains(err.Error(), "address not allowed") {
 		t.Fatalf("request to 127.0.0.1 should be refused, got %v", err)
 	}
 	allowed, _ := New([]string{"127.0.0.0/8"}, false)
-	res, err := allowed.Client(2 * time.Second).Get(srv.URL)
+	res, err = allowed.Client(2 * time.Second).Get(srv.URL)
 	if err != nil {
 		t.Fatalf("allowlisted CIDR: %v", err)
 	}

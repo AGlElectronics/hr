@@ -328,7 +328,7 @@ func (s *BundleService) Plan(ctx context.Context, roles []RolePlanInput, bundleI
 			group := ref.GroupName
 			switch {
 			case state == catalog.RoleKnown && role.Group != "":
-				group = role.IdPGroup()
+				group = role.IDPGroup()
 			case kept[ref.RoleName]:
 			default:
 				continue

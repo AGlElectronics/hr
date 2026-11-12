@@ -86,7 +86,7 @@ func (v *AccessValidator) validate(ctx context.Context, roles []RolePlanInput, k
 		case role.AdminType() && !mayPrivileged:
 			issues[field] = "assigning admin roles needs the HR permission " + string(authz.AssignPrivileged)
 		default:
-			r.GroupName = role.IdPGroup()
+			r.GroupName = role.IDPGroup()
 			if r.Scope == "" {
 				r.Scope = "global"
 			}

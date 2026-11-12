@@ -1,6 +1,6 @@
 // Package provisioners defines the connector boundary between the HR module
 // and external systems (identity provider, workspace, etc.). HR only ever
-// talks to interfaces defined here. Real implementations (Keycloak IdP,
+// talks to interfaces defined here. Real implementations (Keycloak IDP,
 // Google Workspace, …) live behind these interfaces and are swapped in
 // without touching service code. See ADR-0002.
 package provisioners
@@ -17,8 +17,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// IdPUser is the minimal shape HR hands to the identity provider.
-type IdPUser struct {
+// IDPUser is the minimal shape HR hands to the identity provider.
+type IDPUser struct {
 	HRPersonID uuid.UUID
 	// ExternalID is the account HR already linked to this person. When it
 	// still exists it is updated in place (its username is never changed);
@@ -33,20 +33,20 @@ type IdPUser struct {
 	// remove the attribute.
 	Attributes map[string]string
 	Groups     []string
-	// SendPasswordSetup asks the IdP to email a brand-new user a link to set
+	// SendPasswordSetup asks the IDP to email a brand-new user a link to set
 	// their own password instead of HR handing out a temporary one.
 	SendPasswordSetup bool
 }
 
-// IdPResult is what the provider returns on success.
-type IdPResult struct {
-	// ExternalID is the IdP's native id for the user (sub / uuid / …).
+// IDPResult is what the provider returns on success.
+type IDPResult struct {
+	// ExternalID is the IDP's native id for the user (sub / uuid / …).
 	ExternalID string
 	// GroupsApplied echoes the groups actually set.
 	GroupsApplied []string
-	// Created is true when the IdP user did not exist before this call.
+	// Created is true when the IDP user did not exist before this call.
 	Created bool
-	// PasswordSetupEmailSent is true when the IdP emailed a set-password link.
+	// PasswordSetupEmailSent is true when the IDP emailed a set-password link.
 	PasswordSetupEmailSent bool
 	// PasswordSetupError explains why the email could not be sent (the
 	// realm needs SMTP). HR never sets a password; resend the email instead.
@@ -64,7 +64,7 @@ type LinkOnlyReporter interface {
 	LinkOnly() bool
 }
 
-// UserInfo is one account in the IdP (review queue scan).
+// UserInfo is one account in the IDP (review queue scan).
 type UserInfo struct {
 	ID            string            `json:"id"`
 	Username      string            `json:"username"`
@@ -77,18 +77,18 @@ type UserInfo struct {
 	CreatedAt     *time.Time        `json:"created_at,omitempty"`
 }
 
-// UserScanner pages through every account in the IdP.
+// UserScanner pages through every account in the IDP.
 type UserScanner interface {
 	ScanUsers(ctx context.Context, fn func(UserInfo) error) error
 }
 
-// GroupEnsurer is implemented by IdPs that can create groups ahead of any
+// GroupEnsurer is implemented by IDPs that can create groups ahead of any
 // user being provisioned (departments create theirs on save).
 type GroupEnsurer interface {
 	EnsureGroups(ctx context.Context, names []string) error
 }
 
-// GroupMember is a user listed inside an IdP group.
+// GroupMember is a user listed inside an IDP group.
 type GroupMember struct {
 	ID        string `json:"id"`
 	Username  string `json:"username"`
@@ -98,7 +98,7 @@ type GroupMember struct {
 	Enabled   bool   `json:"enabled"`
 }
 
-// GroupInfo is one IdP group with its direct members.
+// GroupInfo is one IDP group with its direct members.
 type GroupInfo struct {
 	ID      string        `json:"id"`
 	Name    string        `json:"name"`
@@ -106,24 +106,24 @@ type GroupInfo struct {
 	Members []GroupMember `json:"members"`
 }
 
-// Directory reads groups from the IdP (HR's read-only Keycloak view).
+// Directory reads groups from the IDP (HR's read-only Keycloak view).
 type Directory interface {
 	ListGroups(ctx context.Context) ([]GroupInfo, error)
 }
 
-// ErrAccountNotFound means the IdP has no user with the stored id (deleted
-// in the IdP, or created by a different/fake IdP).
+// ErrAccountNotFound means the IDP has no user with the stored id (deleted
+// in the IDP, or created by a different/fake IDP).
 var ErrAccountNotFound = errors.New("account not found in the identity provider")
 
 // UsernameTakenError means a new account would reuse a username that
-// belongs to someone else in the IdP.
+// belongs to someone else in the IDP.
 type UsernameTakenError struct{ Username string }
 
 func (e *UsernameTakenError) Error() string {
 	return fmt.Sprintf("the username %q is already used by another account", e.Username)
 }
 
-// AccountInfo is the login state of an IdP user.
+// AccountInfo is the login state of an IDP user.
 type AccountInfo struct {
 	Username string `json:"username"`
 	Enabled  bool   `json:"enabled"`
@@ -139,7 +139,7 @@ type Profile struct {
 	Attributes map[string]string
 }
 
-// AccountManager changes an existing IdP account after onboarding
+// AccountManager changes an existing IDP account after onboarding
 // (access changes, offboarding). Methods return ErrAccountNotFound when the
 // user no longer exists.
 type AccountManager interface {
@@ -157,27 +157,27 @@ type UsernameDirectory interface {
 	UsernameOwner(ctx context.Context, username string) (owner string, found bool, err error)
 }
 
-// IdPProvisioner is the connector the HR service calls. FakeIdP is used in
-// tests; KeycloakIdP talks to the shared suite Keycloak in AUTH stack mode.
-type IdPProvisioner interface {
-	// Provision creates or updates the user in the IdP and syncs groups.
+// IDPProvisioner is the connector the HR service calls. FakeIDP is used in
+// tests; KeycloakIDP talks to the shared suite Keycloak in AUTH stack mode.
+type IDPProvisioner interface {
+	// Provision creates or updates the user in the IDP and syncs groups.
 	// It must be idempotent on HRPersonID so retries are safe.
-	Provision(ctx context.Context, u IdPUser) (IdPResult, error)
+	Provision(ctx context.Context, u IDPUser) (IDPResult, error)
 }
 
 // -----------------------------------------------------------------------------
 // Fake implementation — in-memory, deterministic, no network.
 // -----------------------------------------------------------------------------
 
-// FakeIdP is a stub IdPProvisioner used in local dev and tests. It records
+// FakeIDP is a stub IDPProvisioner used in local dev and tests. It records
 // every provision call and returns a stable fake external id derived from
 // the HR person id. Replace with a Keycloak-backed implementation when
 // identity-first auth lands.
-type FakeIdP struct {
+type FakeIDP struct {
 	logger zerolog.Logger
 
 	mu          sync.Mutex
-	calls       []IdPUser
+	calls       []IDPUser
 	memberships []MembershipChange
 	enabled     map[string]bool
 	setupMails  []string
@@ -187,28 +187,28 @@ type FakeIdP struct {
 	FailProvision error
 }
 
-// MembershipChange is one UpdateMembership call seen by FakeIdP.
+// MembershipChange is one UpdateMembership call seen by FakeIDP.
 type MembershipChange struct {
 	UserID string
 	Add    []string
 	Remove []string
 }
 
-// NewFakeIdP returns a FakeIdP that logs each call via the provided logger.
-func NewFakeIdP(logger zerolog.Logger) *FakeIdP {
-	return &FakeIdP{logger: logger.With().Str("component", "fake_idp").Logger()}
+// NewFakeIDP returns a FakeIDP that logs each call via the provided logger.
+func NewFakeIDP(logger zerolog.Logger) *FakeIDP {
+	return &FakeIDP{logger: logger.With().Str("component", "fake_idp").Logger()}
 }
 
 // Provision records the call and returns a deterministic ExternalID.
-func (f *FakeIdP) Provision(ctx context.Context, u IdPUser) (IdPResult, error) {
+func (f *FakeIDP) Provision(ctx context.Context, u IDPUser) (IDPResult, error) {
 	if ctx.Err() != nil {
-		return IdPResult{}, ctx.Err()
+		return IDPResult{}, ctx.Err()
 	}
 	if u.HRPersonID == uuid.Nil {
-		return IdPResult{}, fmt.Errorf("fake idp: HRPersonID required")
+		return IDPResult{}, fmt.Errorf("fake idp: HRPersonID required")
 	}
 	if u.Username == "" {
-		return IdPResult{}, fmt.Errorf("fake idp: Username required")
+		return IDPResult{}, fmt.Errorf("fake idp: Username required")
 	}
 
 	f.mu.Lock()
@@ -216,7 +216,7 @@ func (f *FakeIdP) Provision(ctx context.Context, u IdPUser) (IdPResult, error) {
 	fail := f.FailProvision
 	f.mu.Unlock()
 	if fail != nil {
-		return IdPResult{}, fail
+		return IDPResult{}, fail
 	}
 
 	// Deterministic external id: "idp:<uuid>" so tests can assert exact
@@ -233,19 +233,19 @@ func (f *FakeIdP) Provision(ctx context.Context, u IdPUser) (IdPResult, error) {
 		Time("at", time.Now().UTC()).
 		Msg("fake idp provision")
 
-	// Copy groups so the caller cannot mutate FakeIdP's stored call.
+	// Copy groups so the caller cannot mutate FakeIDP's stored call.
 	applied := append([]string(nil), u.Groups...)
-	return IdPResult{ExternalID: ext, GroupsApplied: applied, Created: created, PasswordSetupEmailSent: created && u.SendPasswordSetup}, nil
+	return IDPResult{ExternalID: ext, GroupsApplied: applied, Created: created, PasswordSetupEmailSent: created && u.SendPasswordSetup}, nil
 }
 
-// EnsureGroups logs the groups that a real IdP would create.
-func (f *FakeIdP) EnsureGroups(_ context.Context, names []string) error {
+// EnsureGroups logs the groups that a real IDP would create.
+func (f *FakeIDP) EnsureGroups(_ context.Context, names []string) error {
 	f.logger.Info().Strs("groups", names).Msg("fake idp ensure groups")
 	return nil
 }
 
 // ListGroups returns the groups seen in provision calls (no members).
-func (f *FakeIdP) ListGroups(_ context.Context) ([]GroupInfo, error) {
+func (f *FakeIDP) ListGroups(_ context.Context) ([]GroupInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	seen := map[string]bool{}
@@ -262,14 +262,14 @@ func (f *FakeIdP) ListGroups(_ context.Context) ([]GroupInfo, error) {
 }
 
 // GetAccount reports every fake-provisioned or scanned id as an account.
-func (f *FakeIdP) GetAccount(_ context.Context, userID string) (*AccountInfo, error) {
+func (f *FakeIDP) GetAccount(_ context.Context, userID string) (*AccountInfo, error) {
 	if !strings.HasPrefix(userID, "idp:") && !f.scanned(userID) {
 		return nil, ErrAccountNotFound
 	}
 	return &AccountInfo{Username: userID, Enabled: f.Enabled(userID)}, nil
 }
 
-func (f *FakeIdP) scanned(userID string) bool {
+func (f *FakeIDP) scanned(userID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.Users {
@@ -281,7 +281,7 @@ func (f *FakeIdP) scanned(userID string) bool {
 }
 
 // UpdateMembership logs and records the membership change.
-func (f *FakeIdP) UpdateMembership(_ context.Context, userID string, add, remove []string) error {
+func (f *FakeIDP) UpdateMembership(_ context.Context, userID string, add, remove []string) error {
 	f.logger.Info().Str("user", userID).Strs("add", add).Strs("remove", remove).Msg("fake idp membership")
 	f.mu.Lock()
 	f.memberships = append(f.memberships, MembershipChange{UserID: userID, Add: append([]string(nil), add...), Remove: append([]string(nil), remove...)})
@@ -290,28 +290,28 @@ func (f *FakeIdP) UpdateMembership(_ context.Context, userID string, add, remove
 }
 
 // Memberships returns every UpdateMembership call made so far (tests).
-func (f *FakeIdP) Memberships() []MembershipChange {
+func (f *FakeIDP) Memberships() []MembershipChange {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]MembershipChange(nil), f.memberships...)
 }
 
 // SetFailProvision makes Provision fail with err (nil: succeed again).
-func (f *FakeIdP) SetFailProvision(err error) {
+func (f *FakeIDP) SetFailProvision(err error) {
 	f.mu.Lock()
 	f.FailProvision = err
 	f.mu.Unlock()
 }
 
 // SetUsers sets what ScanUsers returns.
-func (f *FakeIdP) SetUsers(users []UserInfo) {
+func (f *FakeIDP) SetUsers(users []UserInfo) {
 	f.mu.Lock()
 	f.Users = users
 	f.mu.Unlock()
 }
 
 // SetEnabled records the enable/disable.
-func (f *FakeIdP) SetEnabled(_ context.Context, userID string, enabled bool) error {
+func (f *FakeIDP) SetEnabled(_ context.Context, userID string, enabled bool) error {
 	f.logger.Info().Str("user", userID).Bool("enabled", enabled).Msg("fake idp set enabled")
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -323,7 +323,7 @@ func (f *FakeIdP) SetEnabled(_ context.Context, userID string, enabled bool) err
 }
 
 // Enabled reports the last SetEnabled for a user (true when never called).
-func (f *FakeIdP) Enabled(userID string) bool {
+func (f *FakeIDP) Enabled(userID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	v, ok := f.enabled[userID]
@@ -331,7 +331,7 @@ func (f *FakeIdP) Enabled(userID string) bool {
 }
 
 // SendPasswordSetup records a resent set-password email.
-func (f *FakeIdP) SendPasswordSetup(_ context.Context, userID string) error {
+func (f *FakeIDP) SendPasswordSetup(_ context.Context, userID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setupMails = append(f.setupMails, userID)
@@ -339,14 +339,14 @@ func (f *FakeIdP) SendPasswordSetup(_ context.Context, userID string) error {
 }
 
 // SetupMails lists users who got a resent set-password email.
-func (f *FakeIdP) SetupMails() []string {
+func (f *FakeIDP) SetupMails() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.setupMails...)
 }
 
 // ScanUsers returns Users.
-func (f *FakeIdP) ScanUsers(_ context.Context, fn func(UserInfo) error) error {
+func (f *FakeIDP) ScanUsers(_ context.Context, fn func(UserInfo) error) error {
 	f.mu.Lock()
 	users := append([]UserInfo(nil), f.Users...)
 	f.mu.Unlock()
@@ -359,13 +359,13 @@ func (f *FakeIdP) ScanUsers(_ context.Context, fn func(UserInfo) error) error {
 }
 
 // UpdateProfile logs the profile change.
-func (f *FakeIdP) UpdateProfile(_ context.Context, userID string, p Profile) error {
+func (f *FakeIDP) UpdateProfile(_ context.Context, userID string, p Profile) error {
 	f.logger.Info().Str("user", userID).Str("username", p.Username).Str("email", p.Email).Msg("fake idp update profile")
 	return nil
 }
 
 // UsernameOwner reports usernames from earlier provision calls.
-func (f *FakeIdP) UsernameOwner(_ context.Context, username string) (string, bool, error) {
+func (f *FakeIDP) UsernameOwner(_ context.Context, username string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, c := range f.calls {
@@ -377,7 +377,7 @@ func (f *FakeIdP) UsernameOwner(_ context.Context, username string) (string, boo
 }
 
 // DeleteAccount logs the deletion.
-func (f *FakeIdP) DeleteAccount(_ context.Context, userID string) error {
+func (f *FakeIDP) DeleteAccount(_ context.Context, userID string) error {
 	if !strings.HasPrefix(userID, "idp:") {
 		return ErrAccountNotFound
 	}
@@ -387,10 +387,10 @@ func (f *FakeIdP) DeleteAccount(_ context.Context, userID string) error {
 
 // Calls returns a snapshot of every Provision call made so far. Intended
 // for tests and the local /debug surface (not exposed in the HTTP API).
-func (f *FakeIdP) Calls() []IdPUser {
+func (f *FakeIDP) Calls() []IDPUser {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]IdPUser, len(f.calls))
+	out := make([]IDPUser, len(f.calls))
 	copy(out, f.calls)
 	return out
 }

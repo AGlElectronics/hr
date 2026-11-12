@@ -9,7 +9,7 @@
 //	  "privileged","dynamic","default","scope","permissions","note"}]}
 //
 // with the revision also as the ETag. HR assigns roles by adding the person
-// to the role's IdP group. Which modules exist comes from
+// to the role's IDP group. Which modules exist comes from
 // ROLE_CATALOG_SOURCES (Discover is the hook for Den's paired-module list).
 // The last catalog of each module is cached, so roles stay assignable and
 // visible while a module is offline.
@@ -39,7 +39,7 @@ type Role struct {
 	Label       string `json:"label"`
 	Description string `json:"description"`
 	// Group is the normalised form, used for comparisons; GroupDisplay the
-	// group as the module's admin typed it, used when talking to the IdP.
+	// group as the module's admin typed it, used when talking to the IDP.
 	Group        string   `json:"group"`
 	GroupDisplay string   `json:"group_display,omitempty"`
 	Assignable   bool     `json:"assignable"`
@@ -57,10 +57,10 @@ type Role struct {
 	Dynamic bool `json:"dynamic"`
 }
 
-// IdPGroup is the group name HR adds people to: GroupDisplay, else Group.
-// The IdP may look groups up case-sensitively, so the normalised form
+// IDPGroup is the group name HR adds people to: GroupDisplay, else Group.
+// The IDP may look groups up case-sensitively, so the normalised form
 // could name a different (new) group.
-func (r Role) IdPGroup() string {
+func (r Role) IDPGroup() string {
 	if r.GroupDisplay != "" {
 		return r.GroupDisplay
 	}
@@ -400,7 +400,7 @@ func fetchOne(ctx context.Context, client *http.Client, src Source, token string
 	if err != nil {
 		return fail(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	now := time.Now().UTC()
 	if res.StatusCode == http.StatusNotModified && prev != nil {

@@ -3,6 +3,7 @@ package http_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -14,7 +15,7 @@ type reviewItem struct {
 	ID            string `json:"id"`
 	Source        string `json:"source"`
 	Status        string `json:"status"`
-	IdPUserID     string `json:"idp_user_id"`
+	IDPUserID     string `json:"idp_user_id"`
 	Email         string `json:"email"`
 	MatchKind     string `json:"match_kind"`
 	MatchPersonID string `json:"match_person_id"`
@@ -48,7 +49,7 @@ func findItem(items []reviewItem, f func(reviewItem) bool) *reviewItem {
 // account, accept creates the person linked to it, merge links an account
 // to an existing person.
 func TestReviewQueue(t *testing.T) {
-	router, pool, idp, _ := fakeIdPRouter(t)
+	router, pool, idp, _ := fakeIDPRouter(t)
 	admin := clientAs(router, "test-hr-admin", "")
 	ctx := context.Background()
 	dept, _ := createDepartment(t, admin, pool, "Review")
@@ -72,9 +73,9 @@ func TestReviewQueue(t *testing.T) {
 		t.Fatalf("scan %d %s", rec.Code, rec.Body.String())
 	}
 	items := reviewItems(t, admin, "source=idp_scan")
-	verified := findItem(items, func(i reviewItem) bool { return i.IdPUserID == users[0].ID })
-	unverified := findItem(items, func(i reviewItem) bool { return i.IdPUserID == users[1].ID })
-	fresh := findItem(items, func(i reviewItem) bool { return i.IdPUserID == users[2].ID })
+	verified := findItem(items, func(i reviewItem) bool { return i.IDPUserID == users[0].ID })
+	unverified := findItem(items, func(i reviewItem) bool { return i.IDPUserID == users[1].ID })
+	fresh := findItem(items, func(i reviewItem) bool { return i.IDPUserID == users[2].ID })
 	if verified == nil || unverified == nil || fresh == nil {
 		t.Fatalf("scan items: %+v", items)
 	}
@@ -115,13 +116,13 @@ func TestReviewQueue(t *testing.T) {
 			Person struct {
 				ID        string `json:"id"`
 				Email     string `json:"email"`
-				IdPUserID string `json:"idp_user_id"`
+				IDPUserID string `json:"idp_user_id"`
 			} `json:"person"`
 		} `json:"onboarding"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &acc)
 	cleanupPerson(t, pool, acc.Onboarding.Person.ID)
-	if acc.Onboarding.Person.IdPUserID != users[2].ID || acc.Onboarding.Person.Email != users[2].Email {
+	if acc.Onboarding.Person.IDPUserID != users[2].ID || acc.Onboarding.Person.Email != users[2].Email {
 		t.Fatalf("accepted person: %s", rec.Body.String())
 	}
 	if st := waitProvisioning(t, admin, acc.Onboarding.Draft.ID); st != "succeeded" {
@@ -135,41 +136,47 @@ func TestReviewQueue(t *testing.T) {
 // TestSelfServiceRegistration: a signed-in volunteer without HR roles fills
 // in their own entry; the lead of the chosen department reviews it.
 func TestSelfServiceRegistration(t *testing.T) {
-	router, pool, _, _ := fakeIdPRouter(t)
+	router, pool, _, _ := fakeIDPRouter(t)
 	admin := clientAs(router, "test-hr-admin", "")
 	dept, _ := createDepartment(t, admin, pool, "Selfserve")
 	sub := uniqueNick("volsub")
 	email := sub + "@example.test"
 	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM review_items WHERE idp_subject = $1`, sub) })
-	vol := func(method, path string, body any) *http.Response {
+	vol := func(method, path string, body any) (int, []byte) {
 		rec := clientAsWithEmail(router, sub, "stash-volunteer", email)(method, path, body)
-		return rec.Result()
+		res := rec.Result()
+		defer func() { _ = res.Body.Close() }()
+		raw, err := io.ReadAll(res.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return res.StatusCode, raw
 	}
 
-	if res := vol(http.MethodGet, "/api/self-service/registration", nil); res.StatusCode != http.StatusNotFound {
-		t.Fatalf("no entry yet: want 404, got %d", res.StatusCode)
+	if status, _ := vol(http.MethodGet, "/api/self-service/registration", nil); status != http.StatusNotFound {
+		t.Fatalf("no entry yet: want 404, got %d", status)
 	}
-	res := vol(http.MethodPut, "/api/self-service/registration", map[string]any{"first_name": "Vera", "last_name": "Volunteer", "department_id": dept})
+	status, raw := vol(http.MethodPut, "/api/self-service/registration", map[string]any{"first_name": "Vera", "last_name": "Volunteer", "department_id": dept})
 	var v struct {
 		Status        string            `json:"status"`
 		Email         string            `json:"email"`
 		MissingFields map[string]string `json:"missing_fields"`
 	}
-	_ = json.NewDecoder(res.Body).Decode(&v)
-	if res.StatusCode != http.StatusOK || v.Status != "pending" || v.Email != email || v.MissingFields["phone"] == "" {
-		t.Fatalf("partial registration: %d %+v", res.StatusCode, v)
+	_ = json.Unmarshal(raw, &v)
+	if status != http.StatusOK || v.Status != "pending" || v.Email != email || v.MissingFields["phone"] == "" {
+		t.Fatalf("partial registration: %d %+v", status, v)
 	}
 	full := completePerson("Vera", "Volunteer", email, uniqueNick("vera"))
 	delete(full, "email")
 	full["department_id"] = dept
-	res = vol(http.MethodPut, "/api/self-service/registration", full)
-	_ = json.NewDecoder(res.Body).Decode(&v)
+	_, raw = vol(http.MethodPut, "/api/self-service/registration", full)
+	_ = json.Unmarshal(raw, &v)
 	if v.Status != "ready" {
 		t.Fatalf("complete registration should be ready: %+v", v)
 	}
 	// The volunteer has no HR role: the queue itself stays closed.
-	if r := vol(http.MethodGet, "/api/review", nil); r.StatusCode != http.StatusForbidden {
-		t.Fatalf("volunteer reading the queue: want 403, got %d", r.StatusCode)
+	if status, _ := vol(http.MethodGet, "/api/review", nil); status != http.StatusForbidden {
+		t.Fatalf("volunteer reading the queue: want 403, got %d", status)
 	}
 
 	leadID, _ := startOnboarding(t, admin, pool, dept, "Lotte")
@@ -200,7 +207,7 @@ func TestSelfServiceRegistration(t *testing.T) {
 	_, _ = pool.Exec(context.Background(), `DELETE FROM employment_drafts WHERE person_id IN (SELECT id FROM people WHERE lower(email) = $1)`, email)
 	_, _ = pool.Exec(context.Background(), `DELETE FROM people WHERE lower(email) = $1`, email)
 	delete(full, "email")
-	if r := vol(http.MethodPut, "/api/self-service/registration", full); r.StatusCode != http.StatusConflict {
-		t.Fatalf("editing after the decision: want 409, got %d", r.StatusCode)
+	if status, _ := vol(http.MethodPut, "/api/self-service/registration", full); status != http.StatusConflict {
+		t.Fatalf("editing after the decision: want 409, got %d", status)
 	}
 }

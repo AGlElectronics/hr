@@ -25,7 +25,7 @@ func TestDirectoryGroups(t *testing.T) {
 	})
 	do := clientAs(router, "test-hr-admin", "")
 	_, group := createDepartment(t, do, pool, "Directory")
-	// The role's IdP group comes from Stash's role catalog.
+	// The role's IDP group comes from Stash's role catalog.
 	bundleName, accessGroup := "Directory bundle "+uniqueNick("d"), "stash-volunteer"
 	rec := do(http.MethodPost, "/api/access-bundles", map[string]any{
 		"name": bundleName, "roles": []map[string]string{{"role_name": "stash:volunteer"}},
@@ -78,7 +78,7 @@ func TestDirectoryGroups(t *testing.T) {
 	access := byName[accessGroup]
 	if access.Kind != "access" || !slices.Contains(access.AccessGroups, bundleName) ||
 		!strings.Contains(access.DisplayName, bundleName) {
-		t.Fatalf("access group's IdP group %q missing: %+v", accessGroup, out.Groups)
+		t.Fatalf("access group's IDP group %q missing: %+v", accessGroup, out.Groups)
 	}
 }
 

@@ -18,13 +18,13 @@ import (
 )
 
 // ProvisionService completes onboardings: it queues a background job that
-// creates or links the IdP account, applies the groups, has the IdP email
+// creates or links the IDP account, applies the groups, has the IDP email
 // the set-password link, and marks the onboarding and the person active.
 type ProvisionService struct {
 	pool     *pgxpool.Pool
 	drafts   *DraftService
 	people   *PeopleService
-	idp      provisioners.IdPProvisioner // nil when IDP_PROVISIONER_MODE=off
+	idp      provisioners.IDPProvisioner // nil when IDP_PROVISIONER_MODE=off
 	audit    *audit.Writer
 	settings *SettingsService
 	gate     *RoleGateService // nil = no training requirements
@@ -38,7 +38,7 @@ type ProvisionService struct {
 }
 
 // NewProvisionService wires a ProvisionService. idp is nil in off mode.
-func NewProvisionService(pool *pgxpool.Pool, drafts *DraftService, people *PeopleService, idp provisioners.IdPProvisioner, aud *audit.Writer, settings *SettingsService) *ProvisionService {
+func NewProvisionService(pool *pgxpool.Pool, drafts *DraftService, people *PeopleService, idp provisioners.IDPProvisioner, aud *audit.Writer, settings *SettingsService) *ProvisionService {
 	return &ProvisionService{pool: pool, drafts: drafts, people: people, idp: idp, audit: aud, settings: settings, sendSetup: true}
 }
 
@@ -51,7 +51,7 @@ func (s *ProvisionService) SetPasswordSetup(send bool) { s.sendSetup = send }
 // SetDepartments gives leads their lead groups when their account is made.
 func (s *ProvisionService) SetDepartments(d *DepartmentService) { s.depts = d }
 
-// SetWorkspace creates Google Workspace accounts after the IdP account.
+// SetWorkspace creates Google Workspace accounts after the IDP account.
 func (s *ProvisionService) SetWorkspace(w *WorkspaceService) { s.workspace = w }
 
 // Register runs onboarding completions on the job queue.
@@ -144,8 +144,8 @@ func draftOf(j Job) (uuid.UUID, error) {
 	return p.DraftID, nil
 }
 
-// permanentIdPError reports IdP errors a retry cannot fix.
-func permanentIdPError(err error) bool {
+// permanentIDPError reports IDP errors a retry cannot fix.
+func permanentIDPError(err error) bool {
 	var taken *provisioners.UsernameTakenError
 	return errors.As(err, &taken) || errors.Is(err, provisioners.ErrNoAccount) || errors.Is(err, provisioners.ErrLinkOnly)
 }
@@ -174,7 +174,7 @@ func (s *ProvisionService) runJob(ctx context.Context, j Job) error {
 	}
 	// A new person has no account yet, so every gated role waits unless an
 	// earlier account already holds the qualifications.
-	grantNow, pending, err := s.gate.Split(ctx, person.IdPUserID, draft.Roles)
+	grantNow, pending, err := s.gate.Split(ctx, person.IDPUserID, draft.Roles)
 	if err != nil {
 		return err
 	}
@@ -191,10 +191,10 @@ func (s *ProvisionService) runJob(ctx context.Context, j Job) error {
 			}
 			extra = append(extra, lead...)
 		}
-		pjob, idpRes, err := s.runIdP(ctx, &gated, person, extra, j.Attempts)
+		pjob, idpRes, err := s.runIDP(ctx, &gated, person, extra, j.Attempts)
 		res.Jobs = append(res.Jobs, pjob)
 		if err != nil {
-			if permanentIdPError(err) {
+			if permanentIDPError(err) {
 				return Permanent(err)
 			}
 			return err
@@ -312,8 +312,8 @@ SELECT d.id FROM employment_drafts d
 	return len(ids), rows.Err()
 }
 
-func (s *ProvisionService) runIdP(ctx context.Context, draft *domain.EmploymentDraft, person *domain.Person, extraGroups []string, attempt int) (domain.ProvisioningJob, provisioners.IdPResult, error) {
-	job := s.beginJob(ctx, draft.ID, domain.TargetIdP, attempt)
+func (s *ProvisionService) runIDP(ctx context.Context, draft *domain.EmploymentDraft, person *domain.Person, extraGroups []string, attempt int) (domain.ProvisioningJob, provisioners.IDPResult, error) {
+	job := s.beginJob(ctx, draft.ID, domain.TargetIDP, attempt)
 
 	groups := append(make([]string, 0, len(draft.Roles)+len(extraGroups)), extraGroups...)
 	for _, r := range draft.Roles {
@@ -325,12 +325,12 @@ func (s *ProvisionService) runIdP(ctx context.Context, draft *domain.EmploymentD
 	settings, err := s.settings.Get(ctx)
 	if err != nil {
 		s.finishJob(ctx, &job, domain.JobStatusFailed, err.Error(), "")
-		return job, provisioners.IdPResult{}, err
+		return job, provisioners.IDPResult{}, err
 	}
 	username := firstNonEmpty(person.Username, UsernameFor(settings.UsernameTemplate, person))
-	res, err := s.idp.Provision(ctx, provisioners.IdPUser{
+	res, err := s.idp.Provision(ctx, provisioners.IDPUser{
 		HRPersonID:  person.ID,
-		ExternalID:  person.IdPUserID,
+		ExternalID:  person.IDPUserID,
 		Username:    username,
 		DisplayName: person.DisplayName,
 		FirstName:   person.FirstName,

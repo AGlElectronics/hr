@@ -14,7 +14,7 @@ import (
 type miscHandler struct {
 	settings  *service.SettingsService
 	dash      *service.DashboardService
-	directory provisioners.Directory // nil when the IdP cannot list groups
+	directory provisioners.Directory // nil when the IDP cannot list groups
 	depts     *service.DepartmentService
 	// relevantGroups are the groups HR assigns or uses (HR roles, catalog
 	// roles, access groups); the group browser shows only these and the
@@ -67,7 +67,7 @@ type idpGroupView struct {
 	DefaultFor []string `json:"default_for,omitempty"`
 }
 
-// idpGroups is a read-only view of the IdP groups HR uses and their members,
+// idpGroups is a read-only view of the IDP groups HR uses and their members,
 // annotated with what HR uses each group for. Other realm groups are left
 // out.
 func (h *miscHandler) idpGroups(w http.ResponseWriter, r *http.Request) {

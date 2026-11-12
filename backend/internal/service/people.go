@@ -24,7 +24,7 @@ type PeopleService struct {
 	pool      *pgxpool.Pool
 	audit     *audit.Writer
 	settings  *SettingsService
-	usernames provisioners.UsernameDirectory // nil when the IdP cannot be asked
+	usernames provisioners.UsernameDirectory // nil when the IDP cannot be asked
 }
 
 // NewPeopleService wires a PeopleService to its collaborators. usernames may
@@ -199,7 +199,7 @@ func scanPerson(row rowScanner) (*domain.Person, error) {
 	p := &domain.Person{}
 	var address, socials, emergency []byte
 	if err := row.Scan(&p.ID, &p.FirstName, &p.LastName, &p.Nickname, &p.Username, &p.DateOfBirth, &p.IsBanned, &p.LegalName, &p.DisplayName, &p.Email,
-		&p.OrgEmail, &p.Phone, &address, &socials, &emergency, &p.Status, &p.Notes, &p.IdPUserID, &p.IdPSubject, &p.PausedAt,
+		&p.OrgEmail, &p.Phone, &address, &socials, &emergency, &p.Status, &p.Notes, &p.IDPUserID, &p.IDPSubject, &p.PausedAt,
 		&p.CreatedAt, &p.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -211,7 +211,7 @@ func scanPerson(row rowScanner) (*domain.Person, error) {
 }
 
 // checkUnique refuses an email, login name or organization email that
-// someone else already uses (in HR, or for the login name in the IdP).
+// someone else already uses (in HR, or for the login name in the IDP).
 func (s *PeopleService) checkUnique(ctx context.Context, self uuid.UUID, email, username, orgEmail string) error {
 	issues := map[string]string{}
 	var field string

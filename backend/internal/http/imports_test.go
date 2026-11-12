@@ -35,7 +35,7 @@ func uploadFile(t *testing.T, router http.Handler, path, name, content string, o
 // error report, commit into the review queue, re-run updates instead of
 // duplicating, undo while nothing was accepted.
 func TestSpreadsheetImport(t *testing.T) {
-	router, pool, _, _ := fakeIdPRouter(t)
+	router, pool, _, _ := fakeIDPRouter(t)
 	admin := clientAs(router, "test-hr-admin", "")
 	ctx := context.Background()
 	dept, _ := createDepartment(t, admin, pool, "Security")

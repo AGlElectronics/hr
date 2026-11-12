@@ -230,13 +230,13 @@ func (f *fakeKeycloak) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newTestIdP(t *testing.T, srv *httptest.Server, mutate func(*KeycloakConfig)) *KeycloakIdP {
+func newTestIDP(t *testing.T, srv *httptest.Server, mutate func(*KeycloakConfig)) *KeycloakIDP {
 	t.Helper()
 	cfg := KeycloakConfig{BaseURL: srv.URL, Realm: "test", ClientID: "hr-provisioner", ClientSecret: "secret"}
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	k, err := NewKeycloakIdP(cfg, zerolog.Nop())
+	k, err := NewKeycloakIDP(cfg, zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,10 +251,10 @@ func attrsOf(u map[string]any) map[string]any {
 func TestKeycloakProvisionManageMode(t *testing.T) {
 	kc, srv := newFakeKeycloak(t)
 	kc.addGroup("/conservices")
-	idp := newTestIdP(t, srv, func(c *KeycloakConfig) { c.GroupParent = "conservices/"; c.GroupPrefix = "cs-" })
+	idp := newTestIDP(t, srv, func(c *KeycloakConfig) { c.GroupParent = "conservices/"; c.GroupPrefix = "cs-" })
 	person := uuid.New()
 
-	res, err := idp.Provision(context.Background(), IdPUser{
+	res, err := idp.Provision(context.Background(), IDPUser{
 		HRPersonID: person, Username: "ada", Email: "ada@example.org", FirstName: "Ada", LastName: "Lovelace",
 		Attributes:        map[string]string{AttrNickname: "ada", AttrPhone: "+441", AttrPrivateEmail: "ada@example.org", AttrOrgEmail: "ada@con.org"},
 		Groups:            []string{"dept-security", "stash-volunteer"},
@@ -294,8 +294,8 @@ func TestKeycloakProvisionManageMode(t *testing.T) {
 func TestKeycloakSetupEmailFailureSetsNoPassword(t *testing.T) {
 	kc, srv := newFakeKeycloak(t)
 	kc.failSetup = true
-	idp := newTestIdP(t, srv, nil)
-	res, err := idp.Provision(context.Background(), IdPUser{HRPersonID: uuid.New(), Username: "bob", Email: "bob@example.org", SendPasswordSetup: true})
+	idp := newTestIDP(t, srv, nil)
+	res, err := idp.Provision(context.Background(), IDPUser{HRPersonID: uuid.New(), Username: "bob", Email: "bob@example.org", SendPasswordSetup: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,8 +311,8 @@ func TestKeycloakSetupEmailFailureSetsNoPassword(t *testing.T) {
 func TestKeycloakDeclaredAttributesOnly(t *testing.T) {
 	kc, srv := newFakeKeycloak(t)
 	kc.declared = []string{AttrHRPersonID}
-	idp := newTestIdP(t, srv, func(c *KeycloakConfig) { c.Attributes = []string{AttrHRPersonID, AttrNickname} })
-	res, err := idp.Provision(context.Background(), IdPUser{HRPersonID: uuid.New(), Username: "cy", Email: "cy@example.org",
+	idp := newTestIDP(t, srv, func(c *KeycloakConfig) { c.Attributes = []string{AttrHRPersonID, AttrNickname} })
+	res, err := idp.Provision(context.Background(), IDPUser{HRPersonID: uuid.New(), Username: "cy", Email: "cy@example.org",
 		Attributes: map[string]string{AttrNickname: "cy"}})
 	if err != nil {
 		t.Fatal(err)
@@ -325,11 +325,11 @@ func TestKeycloakDeclaredAttributesOnly(t *testing.T) {
 
 func TestKeycloakLinkMode(t *testing.T) {
 	kc, srv := newFakeKeycloak(t)
-	idp := newTestIdP(t, srv, func(c *KeycloakConfig) { c.LinkOnly = true; c.GroupParent = "/con" })
+	idp := newTestIDP(t, srv, func(c *KeycloakConfig) { c.LinkOnly = true; c.GroupParent = "/con" })
 	person := uuid.New()
 	ctx := context.Background()
 
-	_, err := idp.Provision(ctx, IdPUser{HRPersonID: person, Username: "dora", Email: "dora@example.org", Groups: []string{"dept-x"}})
+	_, err := idp.Provision(ctx, IDPUser{HRPersonID: person, Username: "dora", Email: "dora@example.org", Groups: []string{"dept-x"}})
 	if !errors.Is(err, ErrNoAccount) {
 		t.Fatalf("no account in link mode: want ErrNoAccount, got %v", err)
 	}
@@ -338,13 +338,13 @@ func TestKeycloakLinkMode(t *testing.T) {
 	}
 
 	existing := kc.addUser("d.explorer", "dora@example.org", map[string][]string{})
-	if _, err := idp.Provision(ctx, IdPUser{HRPersonID: person, Username: "dora", Email: "dora@example.org", Groups: []string{"dept-x"}}); err == nil ||
+	if _, err := idp.Provision(ctx, IDPUser{HRPersonID: person, Username: "dora", Email: "dora@example.org", Groups: []string{"dept-x"}}); err == nil ||
 		!strings.Contains(err.Error(), "/con/dept-x does not exist") {
 		t.Fatalf("missing group in link mode: want error, got %v", err)
 	}
 	kc.addGroup("/con")
 	kc.addGroup("/con/dept-x")
-	res, err := idp.Provision(ctx, IdPUser{HRPersonID: person, Username: "dora", Email: "dora@example.org", FirstName: "Changed", Groups: []string{"dept-x"}, SendPasswordSetup: true})
+	res, err := idp.Provision(ctx, IDPUser{HRPersonID: person, Username: "dora", Email: "dora@example.org", FirstName: "Changed", Groups: []string{"dept-x"}, SendPasswordSetup: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func TestKeycloakListGroupsPagesMembers(t *testing.T) {
 	for i := 0; i < 250; i++ {
 		kc.members[gid] = append(kc.members[gid], kc.addUser(fmt.Sprintf("v%d", i), "", nil))
 	}
-	idp := newTestIdP(t, srv, nil)
+	idp := newTestIDP(t, srv, nil)
 	groups, err := idp.ListGroups(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -382,7 +382,7 @@ func TestKeycloakListGroupsPagesMembers(t *testing.T) {
 func TestKeycloakRetriesWithFreshToken(t *testing.T) {
 	kc, srv := newFakeKeycloak(t)
 	id := kc.addUser("eve", "eve@example.org", nil)
-	idp := newTestIdP(t, srv, nil)
+	idp := newTestIDP(t, srv, nil)
 	if _, err := idp.GetAccount(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}

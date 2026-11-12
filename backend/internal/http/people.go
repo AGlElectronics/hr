@@ -64,7 +64,7 @@ func (h *peopleHandler) create(w http.ResponseWriter, r *http.Request) {
 
 // update edits the profile. Status and the ban flag are kept as-is: they
 // change through onboarding, pause/reactivate, ban and offboarding so the
-// IdP stays in sync. Nobody may change profile-critical fields of their own
+// IDP stays in sync. Nobody may change profile-critical fields of their own
 // record.
 func (h *peopleHandler) update(w http.ResponseWriter, r *http.Request) {
 	id, err := parseUUIDParam(r, "id")
@@ -92,12 +92,12 @@ func (h *peopleHandler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	out := struct {
 		*domain.Person
-		IdPSyncError string `json:"idp_sync_error,omitempty"`
+		IDPSyncError string `json:"idp_sync_error,omitempty"`
 		Warning      string `json:"warning,omitempty"`
 	}{Person: p}
 	warning, err := h.lifecycle.SyncProfile(r.Context(), current, p)
 	if err != nil {
-		out.IdPSyncError = err.Error()
+		out.IDPSyncError = err.Error()
 	}
 	out.Warning = warning
 	writeJSON(w, http.StatusOK, out)

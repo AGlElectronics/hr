@@ -40,8 +40,8 @@ type Deps struct {
 	Logger       zerolog.Logger
 	OIDCVerifier *auth.OIDCVerifier
 
-	// IdP is nil when IDP_PROVISIONER_MODE=off.
-	IdP provisioners.IdPProvisioner
+	// IDP is nil when IDP_PROVISIONER_MODE=off.
+	IDP provisioners.IDPProvisioner
 	// Mailer sends HR's own notices; nil when SMTP is not configured.
 	Mailer mail.Sender
 	// Den is the pairing with Den; nil means a fresh standalone client.
@@ -74,7 +74,7 @@ type Services struct {
 
 // NewRoleGate builds the training-requirement service from config. Gating
 // is off (requirements not enforced) without LEARN_HOLDINGS_URL and token.
-func NewRoleGate(cfg *config.Config, pool *pgxpool.Pool, idp provisioners.IdPProvisioner, logger zerolog.Logger) *service.RoleGateService {
+func NewRoleGate(cfg *config.Config, pool *pgxpool.Pool, idp provisioners.IDPProvisioner, logger zerolog.Logger) *service.RoleGateService {
 	var holdings service.HoldingsSource
 	if cfg.RoleGateConfigured() {
 		holdings = &qualification.HoldingsClient{URL: cfg.LearnHoldingsURL, Token: cfg.LearnServiceToken}
@@ -173,10 +173,10 @@ func NewRouter(deps Deps, version string) http.Handler {
 	auditWriter := audit.NewWriter(deps.Pool, deps.Logger)
 	chk := authz.NewChecker(deps.Pool)
 	settingsSvc := service.NewSettingsService(deps.Pool, auditWriter, den)
-	usernames, _ := deps.IdP.(provisioners.UsernameDirectory)
+	usernames, _ := deps.IDP.(provisioners.UsernameDirectory)
 	peopleSvc := service.NewPeopleService(deps.Pool, auditWriter, settingsSvc, usernames)
 	draftSvc := service.NewDraftService(deps.Pool, auditWriter)
-	provSvc := service.NewProvisionService(deps.Pool, draftSvc, peopleSvc, deps.IdP, auditWriter, settingsSvc)
+	provSvc := service.NewProvisionService(deps.Pool, draftSvc, peopleSvc, deps.IDP, auditWriter, settingsSvc)
 	guard, _ := netguard.New(cfg.OutboundAllowedHosts, false) // validated by config.Load
 	settingsSvc.SetAddressURLCheck(func(raw string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -184,8 +184,8 @@ func NewRouter(deps Deps, version string) http.Handler {
 		return guard.CheckURL(ctx, raw)
 	})
 	checks := &checksHandler{people: peopleSvc, settings: settingsSvc, client: guard.Client(5 * time.Second)}
-	groupEnsurer, _ := deps.IdP.(provisioners.GroupEnsurer)
-	accounts, _ := deps.IdP.(provisioners.AccountManager)
+	groupEnsurer, _ := deps.IDP.(provisioners.GroupEnsurer)
+	accounts, _ := deps.IDP.(provisioners.AccountManager)
 	deptSvc := service.NewDepartmentService(deps.Pool, auditWriter, groupEnsurer, accounts, firstOf(cfg.LeadGroups))
 	deptSvc.SetHooks(service.ParseOffboardHooks(cfg.DepartmentHooks), deps.Logger)
 	deptSvc.SetRoleValidator(validator)
@@ -198,7 +198,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 			if scope == "" {
 				scope = "global"
 			}
-			out = append(out, service.RolePlanInput{RoleName: r.Key, GroupName: r.IdPGroup(), Scope: scope})
+			out = append(out, service.RolePlanInput{RoleName: r.Key, GroupName: r.IDPGroup(), Scope: scope})
 		}
 		return out
 	})
@@ -207,7 +207,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 	gate := deps.RoleGate
 	if gate == nil {
-		gate = NewRoleGate(cfg, deps.Pool, deps.IdP, deps.Logger)
+		gate = NewRoleGate(cfg, deps.Pool, deps.IDP, deps.Logger)
 	}
 	provSvc.SetRoleGate(gate)
 	provSvc.SetPasswordSetup(cfg.KeycloakSendPasswordSetup)
@@ -217,7 +217,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	onboardingSvc.SetProvisioning(provSvc)
 	roleGate := &roleGateHandler{svc: gate, quals: &qualification.Fetcher{Sources: catalog.ParseSources(cfg.QualificationCatalogSources)}, chk: chk}
 
-	directory, _ := deps.IdP.(provisioners.Directory)
+	directory, _ := deps.IDP.(provisioners.Directory)
 	lifecycleSvc := service.NewLifecycleService(deps.Pool, peopleSvc, draftSvc, deptSvc, accounts, deps.Mailer, settingsSvc, auditWriter)
 	lifecycleSvc.SetRoleGate(gate)
 	hookIssuer := cfg.OIDCIssuerURL
@@ -235,7 +235,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 		lifecycleSvc.SetWorkspace(wsSvc)
 	}
 	workspace := &workspaceHandler{svc: wsSvc}
-	scanner, _ := deps.IdP.(provisioners.UserScanner)
+	scanner, _ := deps.IDP.(provisioners.UserScanner)
 	reviewSvc := service.NewReviewService(deps.Pool, auditWriter, peopleSvc, onboardingSvc, draftSvc, provSvc, lifecycleSvc, scanner, accounts,
 		cfg.ProvisionerMode == config.ProvisionerLink, deps.Logger)
 	review := &reviewHandler{svc: reviewSvc, depts: deptSvc, chk: chk}
@@ -378,7 +378,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 			api.With(require(authz.PeopleWrite)).Get("/check/username", checks.username)
 			api.With(require(authz.PeopleWrite), addressLimiter.Middleware).Get("/address/search", checks.addressSearch)
 			api.With(require(authz.PeopleRead)).Get("/dashboard", misc.dashboard)
-			api.With(global(authz.IdPGroupsRead)).Get("/idp/groups", misc.idpGroups)
+			api.With(global(authz.IDPGroupsRead)).Get("/idp/groups", misc.idpGroups)
 			api.With(global(authz.AuditRead)).Get("/audit", auditH.list)
 			api.With(require(authz.PeopleRead)).Get("/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
 				id, err := parseUUIDParam(r, "id")

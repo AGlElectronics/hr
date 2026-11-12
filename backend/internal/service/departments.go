@@ -24,13 +24,13 @@ import (
 )
 
 // DepartmentService owns departments and their lead lists. Saving a
-// department makes sure its IdP groups (members, leads and default roles)
+// department makes sure its IDP groups (members, leads and default roles)
 // exist, so onboarding never has to invent groups on the fly.
 type DepartmentService struct {
 	pool     *pgxpool.Pool
 	audit    *audit.Writer
-	groups   provisioners.GroupEnsurer   // nil when the IdP cannot pre-create groups
-	accounts provisioners.AccountManager // nil when the IdP cannot change membership
+	groups   provisioners.GroupEnsurer   // nil when the IDP cannot pre-create groups
+	accounts provisioners.AccountManager // nil when the IDP cannot change membership
 	// hrLeadGroup is the group of the HR lead role (first of HR_LEAD_GROUPS);
 	// HR gives it to everyone on a lead list.
 	hrLeadGroup string
@@ -204,7 +204,7 @@ archived_at, created_at, updated_at,
 func scanDepartment(row rowScanner) (*domain.Department, error) {
 	d := &domain.Department{}
 	var roles, bundles []byte
-	if err := row.Scan(&d.ID, &d.Slug, &d.Name, &d.Description, &d.GroupName, &roles, &bundles, &d.IdPSyncedAt, &d.IdPSyncError,
+	if err := row.Scan(&d.ID, &d.Slug, &d.Name, &d.Description, &d.GroupName, &roles, &bundles, &d.IDPSyncedAt, &d.IDPSyncError,
 		&d.ArchivedAt, &d.CreatedAt, &d.UpdatedAt, &d.MemberCount); err != nil {
 		return nil, err
 	}
@@ -299,7 +299,7 @@ func (s *DepartmentService) Get(ctx context.Context, id uuid.UUID) (*domain.Depa
 	return d, nil
 }
 
-// Create inserts a department; its IdP group is "dept-<slug>" (leads:
+// Create inserts a department; its IDP group is "dept-<slug>" (leads:
 // "dept-<slug>-lead") and never changes afterwards, even if the department
 // is renamed.
 func (s *DepartmentService) Create(ctx context.Context, actor string, in DepartmentInput) (*domain.Department, error) {
@@ -325,7 +325,7 @@ RETURNING `+deptCols, in.Slug, in.Name, in.Description, "dept-"+in.Slug, roles, 
 	if err := s.audit.Record(ctx, actor, "department.create", "department", d.ID, map[string]any{"slug": d.Slug}); err != nil {
 		return nil, err
 	}
-	d = s.syncIdP(ctx, d)
+	d = s.syncIDP(ctx, d)
 	s.notifyHooks(ctx, d)
 	return d, nil
 }
@@ -360,7 +360,7 @@ RETURNING `+deptCols, id, in.Name, in.Description, roles, bundles))
 	}); err != nil {
 		return nil, err
 	}
-	d = s.syncIdP(ctx, d)
+	d = s.syncIDP(ctx, d)
 	s.notifyHooks(ctx, d)
 	return s.Get(ctx, d.ID)
 }
@@ -393,14 +393,14 @@ UPDATE departments SET archived_at = CASE WHEN $2 THEN COALESCE(archived_at, now
 }
 
 // LeadsResult is the department after a lead change plus anything HR could
-// not do in the IdP.
+// not do in the IDP.
 type LeadsResult struct {
 	Department *domain.Department `json:"department"`
 	Warnings   []string           `json:"warnings"`
 }
 
 // SetLeads replaces the department's lead list. Leads get the department's
-// lead group and the HR lead group in the IdP; people removed from every
+// lead group and the HR lead group in the IDP; people removed from every
 // lead list lose the HR lead group again.
 func (s *DepartmentService) SetLeads(ctx context.Context, actor string, id uuid.UUID, personIDs []uuid.UUID) (*LeadsResult, error) {
 	d, err := s.Get(ctx, id)
@@ -463,7 +463,7 @@ func (s *DepartmentService) SetLeads(ctx context.Context, actor string, id uuid.
 	return &LeadsResult{Department: d, Warnings: warnings}, nil
 }
 
-// syncLeadGroups mirrors a lead change onto the IdP accounts.
+// syncLeadGroups mirrors a lead change onto the IDP accounts.
 func (s *DepartmentService) syncLeadGroups(ctx context.Context, d *domain.Department, added, removed []uuid.UUID) []string {
 	warnings := []string{}
 	if s.accounts == nil {
@@ -532,10 +532,10 @@ func nonEmptyStrings(ss ...string) []string {
 	return out
 }
 
-// syncIdP creates the department groups and its default role groups. A
+// syncIDP creates the department groups and its default role groups. A
 // failure is recorded on the department rather than failing the save, so
 // HR can keep working while Keycloak is unreachable; saving again retries.
-func (s *DepartmentService) syncIdP(ctx context.Context, d *domain.Department) *domain.Department {
+func (s *DepartmentService) syncIDP(ctx context.Context, d *domain.Department) *domain.Department {
 	if s.groups == nil {
 		return d
 	}

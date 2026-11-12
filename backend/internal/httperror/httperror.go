@@ -108,7 +108,7 @@ func Forbidden(message string) *Error {
 	return New(CodeForbidden, message)
 }
 
-// Upstream reports a failure in an external system (e.g. the IdP); unlike
+// Upstream reports a failure in an external system (e.g. the IDP); unlike
 // Internal, the message is shown so HR knows what to fix.
 func Upstream(system string, cause error) *Error {
 	return New(CodeUpstream, system+": "+cause.Error()).WithCause(cause)

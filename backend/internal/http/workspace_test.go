@@ -49,7 +49,7 @@ func TestWorkspaceConnector(t *testing.T) {
 	mailer := &memMailer{}
 	services := &hrhttp.Services{}
 	router, pool := newTestRouter(t, func(pool *pgxpool.Pool, _ *config.Config, deps *hrhttp.Deps) {
-		deps.IdP = provisioners.NewFakeIdP(zerolog.Nop())
+		deps.IDP = provisioners.NewFakeIDP(zerolog.Nop())
 		deps.Jobs = service.NewJobQueue(pool, zerolog.Nop(), true)
 		deps.Mailer = mailer
 		deps.Services = services

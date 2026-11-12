@@ -241,7 +241,7 @@ func runLifecycle(t *testing.T, do testClient, pool *pgxpool.Pool, personID, dra
 	if rec = do(http.MethodPost, "/api/people/"+personID+"/offboard", map[string]any{}); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("offboard without reason: want 422, got %d", rec.Code)
 	}
-	// The stored account id no longer exists in the IdP: offboarding still
+	// The stored account id no longer exists in the IDP: offboarding still
 	// works and says so, instead of failing on the 404.
 	if _, err := pool.Exec(context.Background(),
 		`UPDATE people SET idp_user_id = 'deleted-in-keycloak' WHERE id = $1`, personID); err != nil {
@@ -448,7 +448,7 @@ func newTestRouter(t *testing.T, adjust func(pool *pgxpool.Pool, cfg *config.Con
 		Config: cfg,
 		Pool:   pool,
 		Logger: zerolog.Nop(),
-		IdP:    provisioners.NewFakeIdP(zerolog.Nop()),
+		IDP:    provisioners.NewFakeIDP(zerolog.Nop()),
 	}
 	if adjust != nil {
 		adjust(pool, cfg, &deps)

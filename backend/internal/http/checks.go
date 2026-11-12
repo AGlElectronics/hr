@@ -122,7 +122,7 @@ func (h *checksHandler) photon(ctx context.Context, base, query, country string)
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode >= 300 {
 		return nil, &upstreamStatus{res.StatusCode}
 	}

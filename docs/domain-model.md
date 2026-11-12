@@ -85,7 +85,7 @@ Every external system sits behind an interface in
 
 | Connector | Interface | Real implementation | Test fake |
 | --- | --- | --- | --- |
-| Identity provider | `IdPProvisioner` (+ `AccountManager`, `Directory`, `UserScanner`, …) | `KeycloakIdP` (Admin API, modes `manage` and `link`) | `FakeIdP` |
+| Identity provider | `IDPProvisioner` (+ `AccountManager`, `Directory`, `UserScanner`, …) | `KeycloakIDP` (Admin API, modes `manage` and `link`) | `FakeIDP` |
 | Google Workspace | `WorkspaceDirectory` | not in HR yet (comes from the shared Go package) | `FakeWorkspace` |
 
 Other modules are reached over HTTP: role catalogs (`/api/role-catalog`,

@@ -7,7 +7,7 @@
 //	GET <holdings url>?subjects=a,b  (Authorization: Bearer <service token>)
 //	  {"holdings":{"<subject>":[{"key","expires_at"}]}}
 //
-// Holdings only list currently valid qualifications. Subjects are IdP user
+// Holdings only list currently valid qualifications. Subjects are IDP user
 // ids (HR's external id for a person).
 package qualification
 
@@ -94,7 +94,7 @@ func fetchOne(ctx context.Context, client *http.Client, src catalog.Source) Modu
 	if err != nil {
 		return fail(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode != http.StatusOK {
 		return fail(fmt.Errorf("status %d", res.StatusCode))
@@ -179,7 +179,7 @@ func (c *HoldingsClient) fetch(ctx context.Context, client *http.Client, subject
 	if err != nil {
 		return nil, fmt.Errorf("learn holdings: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("learn holdings: status %d", res.StatusCode)

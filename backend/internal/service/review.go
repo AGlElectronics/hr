@@ -53,7 +53,7 @@ type ReviewItem struct {
 	ID            uuid.UUID   `json:"id"`
 	Source        string      `json:"source"`
 	Status        string      `json:"status"`
-	IdPUserID     string      `json:"idp_user_id,omitempty"`
+	IDPUserID     string      `json:"idp_user_id,omitempty"`
 	Email         string      `json:"email"`
 	EmailVerified bool        `json:"email_verified"`
 	FirstName     string      `json:"first_name"`
@@ -64,7 +64,7 @@ type ReviewItem struct {
 	DepartmentID  *uuid.UUID  `json:"department_id,omitempty"`
 	BundleIDs     []uuid.UUID `json:"bundle_ids"`
 	// MatchPersonID is an existing person with the same email: verified
-	// (the IdP verified the address) or possible (not verified). It is a
+	// (the IDP verified the address) or possible (not verified). It is a
 	// hint for merging, never applied automatically.
 	MatchPersonID *uuid.UUID `json:"match_person_id,omitempty"`
 	MatchKind     string     `json:"match_kind,omitempty"`
@@ -108,7 +108,7 @@ decision_note, created_at, updated_at`
 func scanReview(row rowScanner) (*ReviewItem, error) {
 	it := &ReviewItem{}
 	var data, bundles []byte
-	if err := row.Scan(&it.ID, &it.Source, &it.Status, &it.IdPUserID, &it.Email, &it.EmailVerified, &it.FirstName, &it.LastName,
+	if err := row.Scan(&it.ID, &it.Source, &it.Status, &it.IDPUserID, &it.Email, &it.EmailVerified, &it.FirstName, &it.LastName,
 		&it.Nickname, &it.Phone, &data, &it.DepartmentID, &bundles, &it.MatchPersonID, &it.MatchKind, &it.ImportBatchID, &it.ExternalRef,
 		&it.PersonID, &it.DraftID, &it.DecidedBy, &it.DecidedAt, &it.DecisionNote, &it.CreatedAt, &it.UpdatedAt); err != nil {
 		return nil, err
@@ -156,7 +156,7 @@ func (s *ReviewService) List(ctx context.Context, f ReviewFilter) (*Page[ReviewI
 		var total int
 		it := &ReviewItem{}
 		var data, bundles []byte
-		if err := rows.Scan(&it.ID, &it.Source, &it.Status, &it.IdPUserID, &it.Email, &it.EmailVerified, &it.FirstName, &it.LastName,
+		if err := rows.Scan(&it.ID, &it.Source, &it.Status, &it.IDPUserID, &it.Email, &it.EmailVerified, &it.FirstName, &it.LastName,
 			&it.Nickname, &it.Phone, &data, &it.DepartmentID, &bundles, &it.MatchPersonID, &it.MatchKind, &it.ImportBatchID, &it.ExternalRef,
 			&it.PersonID, &it.DraftID, &it.DecidedBy, &it.DecidedAt, &it.DecisionNote, &it.CreatedAt, &it.UpdatedAt, &total); err != nil {
 			return nil, httperror.Internal(err)
@@ -217,7 +217,7 @@ type ScanResult struct {
 	Linked  int `json:"linked"`
 }
 
-// Scan pages through the IdP and queues every enabled account that has no
+// Scan pages through the IDP and queues every enabled account that has no
 // hrPersonId and no HR record yet. An imported row with the same verified
 // email is linked to the account; unverified addresses are only marked as
 // a possible match.
@@ -528,10 +528,10 @@ func (s *ReviewService) Accept(ctx context.Context, actorName string, id uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	if it.IdPUserID != "" {
+	if it.IDPUserID != "" {
 		var subject string
 		_ = s.pool.QueryRow(ctx, `SELECT COALESCE(idp_subject, '') FROM review_items WHERE id = $1`, id).Scan(&subject)
-		if err := linkAccount(ctx, s.pool, view.Person.ID, it.IdPUserID, subject); err != nil {
+		if err := linkAccount(ctx, s.pool, view.Person.ID, it.IDPUserID, subject); err != nil {
 			return nil, err
 		}
 	} else if it.Source == ReviewSourceSelf {
@@ -563,7 +563,7 @@ UPDATE review_items SET status = 'accepted', person_id = $2, draft_id = $3, deci
 		return nil, httperror.Internal(err)
 	}
 	if err := s.audit.Record(ctx, actorName, "review.accept", "person", view.Person.ID, map[string]any{
-		"review_item": id, "source": it.Source, "linked_account": it.IdPUserID != "",
+		"review_item": id, "source": it.Source, "linked_account": it.IDPUserID != "",
 	}); err != nil {
 		return nil, err
 	}
@@ -591,13 +591,13 @@ func (s *ReviewService) Merge(ctx context.Context, actorName string, id, personI
 		return nil, err
 	}
 	warnings := []string{}
-	if it.IdPUserID != "" {
-		if p.IdPUserID != "" && p.IdPUserID != it.IdPUserID {
+	if it.IDPUserID != "" {
+		if p.IDPUserID != "" && p.IDPUserID != it.IDPUserID {
 			return nil, httperror.Conflict(p.DisplayName + " already has another account; offboard or fix that first")
 		}
 		var subject string
 		_ = s.pool.QueryRow(ctx, `SELECT COALESCE(idp_subject, '') FROM review_items WHERE id = $1`, id).Scan(&subject)
-		if warnings, err = s.lifecycle.LinkAccount(ctx, actorName, personID, it.IdPUserID, subject); err != nil {
+		if warnings, err = s.lifecycle.LinkAccount(ctx, actorName, personID, it.IDPUserID, subject); err != nil {
 			return nil, err
 		}
 	}
@@ -607,7 +607,7 @@ UPDATE review_items SET status = 'merged', person_id = $2, decided_by = $3, deci
 		return nil, httperror.Internal(err)
 	}
 	if err := s.audit.Record(ctx, actorName, "review.merge", "person", personID, map[string]any{
-		"review_item": id, "source": it.Source, "linked_account": it.IdPUserID != "", "warnings": warnings,
+		"review_item": id, "source": it.Source, "linked_account": it.IDPUserID != "", "warnings": warnings,
 	}); err != nil {
 		return nil, err
 	}
@@ -622,10 +622,10 @@ func (s *ReviewService) Reject(ctx context.Context, actorName string, id uuid.UU
 		return nil, nil, err
 	}
 	warnings := []string{}
-	if it.IdPUserID != "" && s.accounts != nil {
+	if it.IDPUserID != "" && s.accounts != nil {
 		if s.linkOnly {
 			warnings = append(warnings, "The account belongs to the convention's identity provider and was not disabled.")
-		} else if err := s.accounts.SetEnabled(ctx, it.IdPUserID, false); err != nil && !errors.Is(err, provisioners.ErrAccountNotFound) {
+		} else if err := s.accounts.SetEnabled(ctx, it.IDPUserID, false); err != nil && !errors.Is(err, provisioners.ErrAccountNotFound) {
 			return nil, nil, idpFailure("disable the account", err)
 		}
 	}
@@ -635,7 +635,7 @@ UPDATE review_items SET status = 'rejected', decided_by = $2, decided_at = now()
 		return nil, nil, httperror.Internal(err)
 	}
 	if err := s.audit.Record(ctx, actorName, "review.reject", "review_item", id, map[string]any{
-		"source": it.Source, "account_disabled": it.IdPUserID != "" && !s.linkOnly, "reason": strings.TrimSpace(reason),
+		"source": it.Source, "account_disabled": it.IDPUserID != "" && !s.linkOnly, "reason": strings.TrimSpace(reason),
 	}); err != nil {
 		return nil, nil, err
 	}
