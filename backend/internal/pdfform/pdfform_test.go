@@ -1,4 +1,4 @@
-﻿package pdfform_test
+package pdfform_test
 
 import (
 	"os"
