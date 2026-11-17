@@ -23,10 +23,14 @@ type OnboardingService struct {
 	suiteDefaults func(ctx context.Context) []RolePlanInput
 	gate          *RoleGateService  // nil = no training requirements
 	prov          *ProvisionService // nil: no provisioning status
+	signing       *SigningService   // nil: cancel skips signing-session revoke
 }
 
 // SetRoleGate shows roles waiting for training on the overview.
 func (s *OnboardingService) SetRoleGate(g *RoleGateService) { s.gate = g }
+
+// SetSigning lets Cancel revoke open sign-hr links for the draft.
+func (s *OnboardingService) SetSigning(sig *SigningService) { s.signing = sig }
 
 // NewOnboardingService wires an OnboardingService. suiteDefaults may be nil.
 func NewOnboardingService(people *PeopleService, drafts *DraftService, depts *DepartmentService, suiteDefaults func(ctx context.Context) []RolePlanInput) *OnboardingService {
@@ -68,6 +72,11 @@ func (s *OnboardingService) Cancel(ctx context.Context, actor string, draftID uu
 	}
 	if _, err := s.drafts.Transition(ctx, draftID, domain.DraftStateRejected); err != nil {
 		return nil, err
+	}
+	if s.signing != nil {
+		if err := s.signing.CancelOpenForDraft(ctx, draftID); err != nil {
+			return nil, err
+		}
 	}
 	p, err := s.people.Get(ctx, d.PersonID)
 	if err != nil {

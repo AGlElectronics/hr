@@ -282,6 +282,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	// Documents block Complete until required forms are signed or waived.
 	provSvc.SetSigning(signingSvc)
 	draftSvc.SetSigning(signingSvc)
+	onboardingSvc.SetSigning(signingSvc)
 	dashSvc := service.NewDashboardService(deps.Pool, peopleSvc, deptSvc)
 	misc := &miscHandler{settings: settingsSvc, dash: dashSvc, directory: directory, depts: deptSvc,
 		relevantGroups: func(ctx context.Context) map[string]bool {

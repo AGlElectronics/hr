@@ -857,6 +857,22 @@ SELECT storage_key, file_name FROM document_template_versions WHERE id = $1`, ve
 	return filled, fileName, nil
 }
 
+// CancelOpenForDraft marks every open signing session for a draft cancelled so
+// emailed links stop working after HR cancels the onboarding.
+func (s *SigningService) CancelOpenForDraft(ctx context.Context, draftID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+UPDATE signing_sessions s
+   SET status = 'cancelled', updated_at = now()
+  FROM onboarding_documents d
+ WHERE d.id = s.onboarding_document_id
+   AND d.draft_id = $1
+   AND s.status = 'sent'`, draftID)
+	if err != nil {
+		return httperror.Internal(err)
+	}
+	return nil
+}
+
 // SignPublicSession is the stub Sign action on sign-hr.
 func (s *SigningService) SignPublicSession(ctx context.Context, token string) (*PublicSigningSession, error) {
 	row, err := s.sessionByToken(ctx, token)
@@ -869,15 +885,22 @@ func (s *SigningService) SignPublicSession(ctx context.Context, token string) (*
 	if row.Status != "sent" {
 		return nil, httperror.Conflict("this signing link is no longer open")
 	}
+	if row.DraftState != string(domain.DraftStatePendingApproval) && row.DraftState != string(domain.DraftStateDraft) {
+		return nil, httperror.Conflict("this onboarding is no longer waiting for signatures")
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, httperror.Internal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 UPDATE signing_sessions SET status = 'signed', completed_at = now(), updated_at = now()
- WHERE id = $1`, row.ID); err != nil {
+ WHERE id = $1 AND status = 'sent'`, row.ID)
+	if err != nil {
 		return nil, httperror.Internal(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, httperror.Conflict("this signing link is no longer open")
 	}
 	if _, err := tx.Exec(ctx, `
 UPDATE onboarding_documents
@@ -901,6 +924,7 @@ type sessionRow struct {
 	DraftID     uuid.UUID
 	VersionID   *uuid.UUID
 	Status      string
+	DraftState  string
 	FormName    string
 	FormVersion int
 	SignerName  string
@@ -915,19 +939,31 @@ func (s *SigningService) sessionByToken(ctx context.Context, token string) (*ses
 	r := &sessionRow{}
 	err := s.pool.QueryRow(ctx, `
 SELECT s.id, s.onboarding_document_id, d.draft_id, s.template_version_id, s.status,
-       s.form_name, s.form_version, s.signer_name, s.expires_at
+       ed.state, s.form_name, s.form_version, s.signer_name, s.expires_at
   FROM signing_sessions s
   JOIN onboarding_documents d ON d.id = s.onboarding_document_id
+  JOIN employment_drafts ed ON ed.id = d.draft_id
  WHERE s.token = $1`, token).
-		Scan(&r.ID, &r.DocumentID, &r.DraftID, &r.VersionID, &r.Status, &r.FormName, &r.FormVersion, &r.SignerName, &r.ExpiresAt)
+		Scan(&r.ID, &r.DocumentID, &r.DraftID, &r.VersionID, &r.Status, &r.DraftState, &r.FormName, &r.FormVersion, &r.SignerName, &r.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, httperror.NotFound("signing session")
 	}
 	if err != nil {
 		return nil, httperror.Internal(err)
 	}
-	if time.Now().UTC().After(r.ExpiresAt) && r.Status == "sent" {
-		_, _ = s.pool.Exec(ctx, `UPDATE signing_sessions SET status = 'expired', updated_at = now() WHERE id = $1`, r.ID)
+	switch r.Status {
+	case "sent", "signed":
+		// ok for read; sign handler further restricts writes to "sent"
+	default:
+		return nil, httperror.NotFound("signing session")
+	}
+	if r.DraftState == string(domain.DraftStateRejected) || r.DraftState == string(domain.DraftStateActive) {
+		return nil, httperror.NotFound("signing session")
+	}
+	if time.Now().UTC().After(r.ExpiresAt) {
+		if r.Status == "sent" {
+			_, _ = s.pool.Exec(ctx, `UPDATE signing_sessions SET status = 'expired', updated_at = now() WHERE id = $1 AND status = 'sent'`, r.ID)
+		}
 		return nil, httperror.Conflict("this signing link has expired; ask HR to send the form again")
 	}
 	return r, nil
