@@ -110,7 +110,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Use(hlog.AccessHandler(func(req *http.Request, status, size int, duration time.Duration) {
 		hlog.FromRequest(req).Info().
 			Str("method", req.Method).
-			Str("path", req.URL.Path).
+			Str("path", redactSigningPath(req.URL.Path)).
 			Int("status", status).
 			Int("size", size).
 			Dur("duration", duration).
@@ -333,10 +333,14 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Get("/api/internal/stats", internalStatsHandler(cfg.StatsPullToken, deps.Pool))
 
 	// Public sign-hr APIs: opaque token in the path, no staff OIDC.
+	// Per-IP limits slow token probing and PDF/sign DoS.
+	signGetLimiter := authbase.NewRateLimiter(authbase.RateLimitOptions{Rate: 1, Burst: 10})
+	signPDFLimiter := authbase.NewRateLimiter(authbase.RateLimitOptions{Rate: 0.5, Burst: 5})
+	signPostLimiter := authbase.NewRateLimiter(authbase.RateLimitOptions{Rate: 0.2, Burst: 3})
 	r.Route("/api/public/signing/{token}", func(pr chi.Router) {
-		pr.Get("/", signing.publicGet)
-		pr.Get("/pdf", signing.publicPDF)
-		pr.Post("/sign", signing.publicSign)
+		pr.With(signGetLimiter.Middleware).Get("/", signing.publicGet)
+		pr.With(signPDFLimiter.Middleware).Get("/pdf", signing.publicPDF)
+		pr.With(signPostLimiter.Middleware).Post("/sign", signing.publicSign)
 	})
 
 	// Per signed-in person: the address lookup calls a third-party service
@@ -546,4 +550,17 @@ func meHandler(cfg *config.Config) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
+}
+
+// redactSigningPath hides the opaque signing token from access logs.
+func redactSigningPath(path string) string {
+	const prefix = "/api/public/signing/"
+	if !strings.HasPrefix(path, prefix) {
+		return path
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return prefix + "[redacted]" + rest[i:]
+	}
+	return prefix + "[redacted]"
 }
