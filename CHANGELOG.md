@@ -6,12 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- sign-hr nginx proxies only `/api/public/signing/` and `/api/brand` (not the
+  full `/api` tree).
+- Public signing routes are rate-limited; access logs redact the path token.
+- Signing session tokens are stored as SHA-256 hashes; emailed links expire in
+  7 days; cancelled/rejected onboardings invalidate open sessions; public
+  GET/PDF/sign reject cancelled, expired, and non-waiting drafts.
+- Staff APIs no longer return raw `sign_url` / `sign_urls` (email only).
+- PDF `Content-Disposition` filenames are sanitized; `STATS_PULL_TOKEN` requires
+  at least 32 characters when set.
+
 ### Added
 
 - Dev-only Telegram **catch-all** (Compose): with `TELEGRAM_DEV_CATCHALL_CHAT_ID`
   (and optional topic id) under `APP_ENV=development`, notices are also
   posted to one test chat prefixed with the intended recipient. Email still
-  goes to Mailpit. Not used in production.
+  goes to Mailpit. Not used in production. Catch-all is not wired into the
+  sign-link mailer (sign URLs stay email-only).
 
 ### Added
 

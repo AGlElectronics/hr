@@ -268,7 +268,7 @@ func (h *signingHandler) staffPDF(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("download") == "1" {
 		disp = "attachment"
 	}
-	w.Header().Set("Content-Disposition", disp+`; filename="`+name+`"`)
+	w.Header().Set("Content-Disposition", contentDisposition(disp, name))
 	w.Header().Set("Content-Length", strconv.Itoa(len(pdf)))
 	_, _ = w.Write(pdf)
 }
@@ -296,7 +296,7 @@ func (h *signingHandler) publicPDF(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("download") == "1" {
 		disp = "attachment"
 	}
-	w.Header().Set("Content-Disposition", disp+`; filename="`+name+`"`)
+	w.Header().Set("Content-Disposition", contentDisposition(disp, name))
 	w.Header().Set("Content-Length", strconv.Itoa(len(pdf)))
 	_, _ = w.Write(pdf)
 }

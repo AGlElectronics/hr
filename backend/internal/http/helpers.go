@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -31,6 +33,22 @@ func decodeJSON(r *http.Request, dst any) error {
 		return httperror.New(httperror.Code(de.Code), de.Message).WithCause(err)
 	}
 	return err
+}
+
+// contentDisposition builds a safe Content-Disposition value (no CR/LF/quotes
+// from untrusted upload file names).
+func contentDisposition(disp, name string) string {
+	name = filepath.Base(strings.TrimSpace(name))
+	name = strings.Map(func(r rune) rune {
+		if r < 32 || r == '"' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, name)
+	if name == "" || name == "." || name == ".." {
+		name = "form.pdf"
+	}
+	return disp + `; filename="` + name + `"`
 }
 
 func parseUUIDParam(r *http.Request, name string) (uuid.UUID, error) {

@@ -280,6 +280,9 @@ func (c *Config) validate(errs []string) error {
 	if c.HRServiceToken != "" && len(c.HRServiceToken) < MinServiceTokenLength {
 		errs = append(errs, fmt.Sprintf("HR_SERVICE_TOKEN must be at least %d characters (openssl rand -hex 32)", MinServiceTokenLength))
 	}
+	if c.StatsPullToken != "" && len(c.StatsPullToken) < MinServiceTokenLength {
+		errs = append(errs, fmt.Sprintf("STATS_PULL_TOKEN must be at least %d characters (openssl rand -hex 32)", MinServiceTokenLength))
+	}
 	// AUTH_MODE=dev outside development is refused by authbase.FromEnv.
 	if c.AuthMode == AuthModeOIDC {
 		if c.OIDCIssuerURL == "" {
