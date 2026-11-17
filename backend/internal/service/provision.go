@@ -101,10 +101,9 @@ type ProvisioningStatus struct {
 
 // SubmitForSigningResult is returned after locking the packet and emailing sign links.
 type SubmitForSigningResult struct {
-	Draft    *domain.EmploymentDraft `json:"draft"`
-	Sent     int                     `json:"sent"`
-	SignURLs []string                `json:"sign_urls,omitempty"`
-	Message  string                  `json:"message"`
+	Draft   *domain.EmploymentDraft `json:"draft"`
+	Sent    int                     `json:"sent"`
+	Message string                  `json:"message"`
 }
 
 // SubmitForSigning locks the onboarding (pending_approval), emails a sign link
@@ -142,19 +141,14 @@ func (s *ProvisionService) SubmitForSigning(ctx context.Context, actor string, d
 		return nil, httperror.Conflict("attach at least one form on the Documents step before sending for signing")
 	}
 	sent := 0
-	urls := []string{}
 	for _, d := range docs {
 		if d.Status == DocSigned || d.Status == DocWaived {
 			continue
 		}
-		res, err := s.signing.SendForSigning(ctx, actor, draftID, d.ID)
-		if err != nil {
+		if _, err := s.signing.SendForSigning(ctx, actor, draftID, d.ID); err != nil {
 			return nil, err
 		}
 		sent++
-		if res.SignURL != "" {
-			urls = append(urls, res.SignURL)
-		}
 	}
 	updated := draft
 	if draft.State == domain.DraftStateDraft {
@@ -168,11 +162,11 @@ func (s *ProvisionService) SubmitForSigning(ctx context.Context, actor string, d
 	}); err != nil {
 		return nil, err
 	}
-	msg := "Sign links sent. The account is not created yet — wait for signatures, check them, then Approve."
+	msg := "Sign links sent by email. The account is not created yet — wait for signatures, check them, then Approve."
 	if sent == 0 {
 		msg = "Forms already sent or cleared. Waiting for signatures (or Approve when they are signed)."
 	}
-	return &SubmitForSigningResult{Draft: updated, Sent: sent, SignURLs: urls, Message: msg}, nil
+	return &SubmitForSigningResult{Draft: updated, Sent: sent, Message: msg}, nil
 }
 
 // Complete is the human Approve step: after attached forms are signed (or

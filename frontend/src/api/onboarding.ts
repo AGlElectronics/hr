@@ -58,7 +58,6 @@ export const updateOnboardingDetails = (id: string, body: OnboardingDetails) =>
 export type SubmitForSigningResult = {
   draft: EmploymentDraft;
   sent: number;
-  sign_urls?: string[];
   message: string;
 };
 

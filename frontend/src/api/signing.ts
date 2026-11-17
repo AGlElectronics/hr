@@ -49,14 +49,12 @@ export type OnboardingDocument = {
   status_note?: string;
   waived_by?: string;
   waived_at?: string;
-  sign_url?: string;
   created_at: string;
   updated_at: string;
 };
 
 export type SendResult = {
   document: OnboardingDocument;
-  sign_url: string;
 };
 
 export const listDocumentTemplates = () =>

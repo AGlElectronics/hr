@@ -93,14 +93,14 @@ export function OnboardingReviewPage() {
   const submit = useMutation({
     mutationFn: () => submitForSigning(id),
     onSuccess: (res) => {
-      setBanner(res.message + (res.sign_urls?.length ? ` First link: ${res.sign_urls[0]}` : ''));
+      setBanner(res.message);
       refresh();
     },
   });
   const sendOne = useMutation({
     mutationFn: (docId: string) => sendOnboardingDocument(id, docId),
     onSuccess: (res) => {
-      setBanner(`Sign link emailed. Copy if needed: ${res.sign_url}`);
+      setBanner('Sign link emailed to the volunteer.');
       refresh();
     },
     onError: (e: Error) => setBanner(e instanceof ApiError ? e.message : e.message),

@@ -65,7 +65,7 @@ export function OnboardingDocumentsPage() {
   const send = useMutation({
     mutationFn: (docId: string) => sendOnboardingDocument(id, docId),
     onSuccess: (res) => {
-      setBanner(`Sign link emailed. Copy if needed: ${res.sign_url}`);
+      setBanner('Sign link emailed to the volunteer.');
       refresh();
     },
     onError: (e: Error) => {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -39,7 +40,7 @@ const (
 	DocStubBlocked = "stub_blocked"
 )
 
-const signingSessionTTL = 30 * 24 * time.Hour
+const signingSessionTTL = 7 * 24 * time.Hour
 
 // DocumentTemplate is a library form (NDA, GDPR, …). PDF and mappings live on versions.
 type DocumentTemplate struct {
@@ -107,10 +108,10 @@ type OnboardingDocument struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
-// SendResult is returned after emailing a sign link.
+// SendResult is returned after emailing a sign link. The raw URL is emailed
+// only and is not included here (avoids shoulder-surfing / copy banners).
 type SendResult struct {
 	Document *OnboardingDocument `json:"document"`
-	SignURL  string              `json:"sign_url"`
 }
 
 // PublicSigningSession is what sign-hr shows (no staff auth).
@@ -604,6 +605,7 @@ func (s *SigningService) SendForSigning(ctx context.Context, actor string, draft
 	if err != nil {
 		return nil, httperror.Internal(err)
 	}
+	tokenHash := hashSigningToken(token)
 	expires := time.Now().UTC().Add(signingSessionTTL)
 	signerName := person.DisplayName
 	if signerName == "" {
@@ -626,7 +628,7 @@ UPDATE signing_sessions SET status = 'cancelled', updated_at = now()
 INSERT INTO signing_sessions
   (onboarding_document_id, template_version_id, token, status, signer_email, signer_name, form_name, form_version, created_by, expires_at)
 VALUES ($1, $2, $3, 'sent', $4, $5, $6, $7, $8, $9) RETURNING id`,
-		documentID, *doc.VersionID, token, email, signerName, doc.TemplateName, doc.TemplateVersion, actor, expires).Scan(&sessionID); err != nil {
+		documentID, *doc.VersionID, tokenHash, email, signerName, doc.TemplateName, doc.TemplateVersion, actor, expires).Scan(&sessionID); err != nil {
 		return nil, httperror.Internal(err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -662,8 +664,8 @@ UPDATE onboarding_documents
 	if err != nil {
 		return nil, err
 	}
-	updated.SignURL = signURL
-	return &SendResult{Document: updated, SignURL: signURL}, nil
+	// Raw sign URL is emailed only — not returned to staff APIs/UI.
+	return &SendResult{Document: updated}, nil
 }
 
 // Waive marks a document waived when allow_stub_skip is on.
@@ -943,7 +945,7 @@ SELECT s.id, s.onboarding_document_id, d.draft_id, s.template_version_id, s.stat
   FROM signing_sessions s
   JOIN onboarding_documents d ON d.id = s.onboarding_document_id
   JOIN employment_drafts ed ON ed.id = d.draft_id
- WHERE s.token = $1`, token).
+ WHERE s.token = $1`, hashSigningToken(token)).
 		Scan(&r.ID, &r.DocumentID, &r.DraftID, &r.VersionID, &r.Status, &r.DraftState, &r.FormName, &r.FormVersion, &r.SignerName, &r.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, httperror.NotFound("signing session")
@@ -1082,4 +1084,10 @@ func randomToken(nBytes int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// hashSigningToken stores SHA-256(hex token) so a DB leak is not bearer-equivalent.
+func hashSigningToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
