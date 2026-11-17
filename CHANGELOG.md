@@ -18,6 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - PDF `Content-Disposition` filenames are sanitized; `STATS_PULL_TOKEN` requires
   at least 32 characters when set.
 
+### Changed
+
+- CI builds and (on tag) publishes `hr-sign` next to backend, migrate and
+  frontend. Helm chart `deploy/charts/hr` is `1.1.0` (needs the matching
+  `con-services` chart commit): `sign` Deployment, `SIGNING_PUBLIC_URL`,
+  Gateway host `sign.host`, NetworkPolicies for `hr-sign`.
+- ADR-0006 records that Sign stays a workflow stub until an e-sign provider
+  is chosen.
+
 ### Added
 
 - Dev-only Telegram **catch-all** (Compose): with `TELEGRAM_DEV_CATCHALL_CHAT_ID`
