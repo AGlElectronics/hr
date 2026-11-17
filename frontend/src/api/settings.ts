@@ -32,6 +32,12 @@ export type WorkspaceSettings = {
   available: boolean;
 };
 
+/** Signing stub settings. provider_connected is always false until a real tool is wired. */
+export type SigningSettings = {
+  allow_stub_skip: boolean;
+  provider_connected: boolean;
+};
+
 export type Settings = {
   organization_name: string;
   org_email_domain: string;
@@ -46,6 +52,10 @@ export type Settings = {
   identity: IdentitySettings;
   retention: RetentionSettings;
   workspace: WorkspaceSettings;
+  signing: SigningSettings;
+  /** Days before a stuck draft onboarding is deleted; 0 = off. */
+  onboarding_auto_delete_days: number;
+  onboarding_auto_delete_managed_by?: 'den';
   /** "den" while HR is paired with Den; Den then owns the shared fields. */
   managed_by?: 'den';
 };

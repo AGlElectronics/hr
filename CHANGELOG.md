@@ -6,6 +6,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Dev-only Telegram **catch-all** (Compose): with `TELEGRAM_DEV_CATCHALL_CHAT_ID`
+  (and optional topic id) under `APP_ENV=development`, notices are also
+  posted to one test chat prefixed with the intended recipient. Email still
+  goes to Mailpit. Not used in production.
+
+### Added
+
+- **Onboarding forms workflow:** sidebar **Forms** page (upload AcroForm →
+  auto-detect fields → map to person attributes → publish) with **immutable
+  versions**. HR attaches only the forms each volunteer needs; Send emails a
+  sign link to their private email (Mailpit in local Compose). Volunteers open
+  `{SIGNING_PUBLIC_URL}/s/{token}` on **sign-hr** (local
+  `https://sign-hr.conservices.test`); **Sign** is still a stub button. When
+  required forms are signed or waived, HR admins are emailed to review;
+  **Approve** (Complete) then creates the IdP account. Documented in
+  [Onboarding forms](https://aglelectronics.github.io/con-services/modules/hr/onboarding-forms/).
+- **`POST /api/document-templates/inspect`:** upload a PDF; returns AcroForm
+  field names and types for the Forms mapper (`settings.manage`).
+- **Auto-delete pending onboardings** after `onboarding_auto_delete_days`
+  (default 30; `0` = off). When Den sets `hr.onboarding_auto_delete_days`, that
+  value wins.
+- Compose service `hr-sign-frontend`, Caddy host `sign-hr.conservices.test`,
+  and env `SIGNING_PUBLIC_URL`.
+
+### Changed
+
+- Documents step no longer auto-attaches every template; HR picks forms per
+  onboarding. Attached forms block Approve until **signed** or **waived**.
+- **Review flow:** **Send for signing** locks the packet
+  (`pending_approval`) and emails sign links without creating an account.
+  **Approve & create account** runs only after signatures are back and HR
+  confirms they checked them. `POST /api/onboardings/{id}/submit-for-signing`
+  is the new lock/send step. Onboarding **In progress** lists both `draft`
+  and `pending_approval` (Waiting for signatures).
+- Onboarding and person forms put address above phone. Choosing an address
+  country updates the phone dialling code (still editable by hand).
+
+### Fixed
+
+- Forms upload/inspect and publish now send the staff Bearer token (raw
+  `fetch` had caused “missing bearer token”). The Forms page shows a PDF
+  preview and fills the binding table from recognized AcroForm fields.
+- AcroForm field discovery no longer fails on common LibreOffice samples
+  (pdfcpu “corrupt choice field”); HR walks field names/types itself.
+- Sign-hr PDF fill no longer falls back to a blank form on LibreOffice
+  samples; field values from admin mappings are written into the AcroForm
+  (`/V`, appearance streams, and NeedAppearances) so preview/download show
+  the filled text in LibreOffice as well as Acrobat/Chrome.
+- Sign-hr follows Den branding via `GET /api/brand` (colours, org name, logo,
+  fonts) with a wider form preview and a clearer action bar.
+- Fixed “ready to approve” email link: it pointed at `/app/onboarding/.../review`
+  (404); it now opens `/onboarding/.../review`.
+- Onboarding list shows a **Ready to approve** section (and dashboard includes
+  `pending_approval`); email copy clarifies this is not the IdP Review queue.
+- Review opens signed forms in an in-app PDF preview
+  (`GET /api/onboardings/{id}/documents/{docID}/pdf`); no download required.
+- Helm `frontend.securityHeaders.extraFrameSrc` defaults to `blob:` so the
+  Forms PDF preview iframe is allowed by CSP.
+- Address search also suggests localities and houses that Photon returns
+  without a separate `street` property (short queries like a city name).
+
 ## [1.0.0] - 2026-11-12
 
 Needs Den: 1.0.0 or later (Den MAJOR 1).

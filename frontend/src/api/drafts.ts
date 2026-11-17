@@ -2,6 +2,7 @@ import { apiRequest, type Page } from './client';
 
 export type DraftState =
   | 'draft'
+  | 'pending_approval'
   | 'provisioning'
   | 'active'
   | 'rejected';
@@ -37,9 +38,12 @@ export type EmploymentDraft = {
   /** Filled in lists. */
   person_name?: string;
   department_name?: string;
+  /** pending_approval and every attached form is signed/waived. */
+  ready_to_approve?: boolean;
 };
 
-export const listDrafts = (filter?: { state?: DraftState; q?: string; limit?: number; offset?: number }) =>
+/** state may be one value or a comma-separated list (e.g. draft,pending_approval). */
+export const listDrafts = (filter?: { state?: DraftState | string; q?: string; limit?: number; offset?: number }) =>
   apiRequest<Page<EmploymentDraft>>('/api/drafts', { query: filter });
 
 export const getDraft = (id: string) =>

@@ -9,7 +9,10 @@ func TestCanTransition_Allowed(t *testing.T) {
 	cases := []struct {
 		from, to DraftState
 	}{
+		{DraftStateDraft, DraftStatePendingApproval},
 		{DraftStateDraft, DraftStateProvisioning},
+		{DraftStatePendingApproval, DraftStateProvisioning},
+		{DraftStatePendingApproval, DraftStateDraft},
 		{DraftStateProvisioning, DraftStateActive},
 		{DraftStateProvisioning, DraftStateRejected},
 		{DraftStateProvisioning, DraftStateDraft},

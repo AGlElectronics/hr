@@ -75,6 +75,18 @@ func (h *onboardingHandler) updateDetails(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, v)
 }
 
+func (h *onboardingHandler) submitForSigning(w http.ResponseWriter, r *http.Request) {
+	id, good := h.own(w, r, authz.OnboardingManage)
+	if !good {
+		return
+	}
+	res, err := h.prov.SubmitForSigning(r.Context(), actorFrom(r), id)
+	if !ok(w, r, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (h *onboardingHandler) complete(w http.ResponseWriter, r *http.Request) {
 	id, good := h.own(w, r, authz.AccessManage)
 	if !good {

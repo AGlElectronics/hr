@@ -281,7 +281,10 @@ function AttentionRow({ it, onOpen }: { it: AttentionItem; onOpen: (id: string) 
 }
 
 function InProgress() {
-  const drafts = useQuery({ queryKey: ['drafts', 'draft', 'dashboard'], queryFn: () => listDrafts({ state: 'draft', limit: 8 }) });
+  const drafts = useQuery({
+    queryKey: ['drafts', 'draft,pending_approval', 'dashboard'],
+    queryFn: () => listDrafts({ state: 'draft,pending_approval', limit: 8 }),
+  });
   const roles = useRoleLabels();
   const items = (drafts.data?.items ?? []).filter((d) => d.department_id);
 
@@ -291,16 +294,25 @@ function InProgress() {
       <ul className="divide-y divide-border">
         {items.map((d) => {
           const access = roles.grouped((d.roles ?? []).map((r) => r.role_name));
+          const status = d.ready_to_approve
+            ? 'Ready to approve'
+            : d.state === 'pending_approval'
+              ? 'Waiting for signatures'
+              : access;
+          const href = d.state === 'pending_approval' || (d.roles?.length ?? 0) > 0
+            ? '/onboarding/$id/review'
+            : '/onboarding/$id/access';
           return (
             <li key={d.id} className="flex items-center justify-between gap-3 py-2 text-sm">
               <span className="min-w-0">
                 <span className="font-medium">{d.person_name || 'Unnamed draft'}</span>
                 <span className="block truncate text-xs text-muted-foreground">
-                  {[d.department_name, access].filter(Boolean).join(' · ')}
+                  {[d.department_name, status].filter(Boolean).join(' · ')}
                 </span>
               </span>
-              <Link to={(d.roles?.length ?? 0) > 0 ? '/onboarding/$id/review' : '/onboarding/$id/access'} params={{ id: d.id }}
-                className="shrink-0 text-primary hover:underline">Continue →</Link>
+              <Link to={href} params={{ id: d.id }} className="shrink-0 text-primary hover:underline">
+                {d.ready_to_approve ? 'Approve →' : 'Continue →'}
+              </Link>
             </li>
           );
         })}

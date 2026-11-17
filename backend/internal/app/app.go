@@ -122,10 +122,13 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
 		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName,
 	})
-	mailer := &mail.Dynamic{Fallback: envSMTP, Pick: func(ctx context.Context) (mail.SMTPConfig, bool, error) {
+	var mailer mail.Sender = &mail.Dynamic{Fallback: envSMTP, Pick: func(ctx context.Context) (mail.SMTPConfig, bool, error) {
 		s, set := den.ModuleSettings().SMTP()
 		return mail.FromDen(ctx, den, s, set)
 	}}
+	// Email stays on Mailpit/SMTP only. Catch-all is for non-email sinks
+	// (Tasks assigns, Rally, …); do not mirror HR email into Telegram.
+
 	if envSMTP != nil {
 		logger.Info().Str("host", cfg.SMTPHost).Msg("own SMTP configured (Den's SMTP wins when paired and set)")
 	} else {

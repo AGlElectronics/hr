@@ -22,11 +22,15 @@ import (
 type DraftService struct {
 	pool    *pgxpool.Pool
 	audit   *audit.Writer
-	bundles *BundleService // plans roles and access groups; nil: no checks
+	bundles *BundleService  // plans roles and access groups; nil: no checks
+	signing *SigningService // optional; AttachDefaults is a no-op in the forms workflow
 }
 
 // SetBundles plans role assignments through the catalogs and access groups.
 func (s *DraftService) SetBundles(b *BundleService) { s.bundles = b }
+
+// SetSigning wires the forms service (kept for router compatibility).
+func (s *DraftService) SetSigning(sig *SigningService) { s.signing = sig }
 
 // NewDraftService wires a DraftService.
 func NewDraftService(pool *pgxpool.Pool, aud *audit.Writer) *DraftService {
@@ -185,6 +189,8 @@ FROM employment_drafts WHERE id = $1
 
 // ListDraftsInput filters and pages the onboarding list.
 type ListDraftsInput struct {
+	// State is one draft state, or a comma-separated list (e.g.
+	// "draft,pending_approval" for the In progress queue). Empty = all.
 	State string
 	// Query matches the person's names and email.
 	Query string
@@ -204,14 +210,19 @@ func (s *DraftService) List(ctx context.Context, in ListDraftsInput) (*Page[doma
 	}
 	rows, err := s.pool.Query(ctx, `
 SELECT d.id, d.person_id, d.department_id, d.title, d.start_date, d.end_date, d.state, COALESCE(d.notes, ''), d.created_by,
-       d.created_at, d.updated_at, p.display_name, COALESCE(dep.name, ''), count(*) OVER ()
+       d.created_at, d.updated_at, p.display_name, COALESCE(dep.name, ''),
+       (d.state = 'pending_approval' AND NOT EXISTS (
+           SELECT 1 FROM onboarding_documents od
+            WHERE od.draft_id = d.id AND od.status NOT IN ('signed', 'waived')
+       )) AS ready_to_approve,
+       count(*) OVER ()
   FROM employment_drafts d
   JOIN people p ON p.id = d.person_id
   LEFT JOIN departments dep ON dep.id = d.department_id
- WHERE ($1 = '' OR d.state = $1)
+ WHERE ($1 = '' OR d.state = ANY(string_to_array($1, ',')))
    AND ($2 = '%%' OR lower(p.legal_name) LIKE $2 OR lower(p.display_name) LIKE $2 OR lower(p.email) LIKE $2)
    AND (NOT $3 OR d.department_id = ANY($4))
- ORDER BY d.updated_at DESC, d.id
+ ORDER BY ready_to_approve DESC, d.updated_at DESC, d.id
  LIMIT $5 OFFSET $6`, strings.TrimSpace(in.State), q, scoped, in.DepartmentIDs, in.Limit, in.Offset)
 	if err != nil {
 		return nil, httperror.Internal(err)
@@ -221,7 +232,7 @@ SELECT d.id, d.person_id, d.department_id, d.title, d.start_date, d.end_date, d.
 	for rows.Next() {
 		var d domain.EmploymentDraft
 		if err := rows.Scan(&d.ID, &d.PersonID, &d.DepartmentID, &d.Title, &d.StartDate, &d.EndDate, &d.State, &d.Notes, &d.CreatedBy,
-			&d.CreatedAt, &d.UpdatedAt, &d.PersonName, &d.DepartmentName, &out.Total); err != nil {
+			&d.CreatedAt, &d.UpdatedAt, &d.PersonName, &d.DepartmentName, &d.ReadyToApprove, &out.Total); err != nil {
 			return nil, httperror.Internal(err)
 		}
 		out.Items = append(out.Items, d)

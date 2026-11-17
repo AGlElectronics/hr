@@ -230,12 +230,12 @@ export function PersonForm({
             </span>
           )}
         </Field>
+        <AddressFields value={v.address} onChange={(val) => set('address', val)} defaultCountry={settings.data?.default_country}
+          errors={serverErrs} inputCls={inputCls} />
         <Field as="div" label="Phone" required error={errs.phone}>
           <PhoneInput value={v.phone ?? ''} onChange={(val) => set('phone', val)} defaultCountry={settings.data?.default_country}
             invalid={!!errs.phone} />
         </Field>
-        <AddressFields value={v.address} onChange={(val) => set('address', val)} defaultCountry={settings.data?.default_country}
-          errors={serverErrs} inputCls={inputCls} />
       </Section>
 
       <Section title="Social handles" hint="Used by teams to reach volunteers during the event. All optional.">

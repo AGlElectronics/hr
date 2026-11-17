@@ -25,6 +25,7 @@ import (
 	"github.com/AGlElectronics/hr/backend/internal/catalog"
 	"github.com/AGlElectronics/hr/backend/internal/config"
 	"github.com/AGlElectronics/hr/backend/internal/denlink"
+	"github.com/AGlElectronics/hr/backend/internal/files"
 	"github.com/AGlElectronics/hr/backend/internal/groupmatch"
 	"github.com/AGlElectronics/hr/backend/internal/mail"
 	"github.com/AGlElectronics/hr/backend/internal/netguard"
@@ -268,6 +269,19 @@ func NewRouter(deps Deps, version string) http.Handler {
 		return err
 	})
 	bundles := &bundleHandler{svc: bundleSvc}
+	signingSvc := service.NewSigningService(deps.Pool, auditWriter, settingsSvc)
+	signingSvc.SetMailer(deps.Mailer)
+	signingSvc.SetNotifier(notifier)
+	signingSvc.SetPublicURL(cfg.SigningPublicURL, cfg.AppBaseURL)
+	if store, err := files.New(context.Background(), cfg); err != nil {
+		deps.Logger.Warn().Err(err).Msg("form PDF storage unavailable")
+	} else if store != nil {
+		signingSvc.SetStorage(store)
+	}
+	signing := &signingHandler{svc: signingSvc, chk: chk}
+	// Documents block Complete until required forms are signed or waived.
+	provSvc.SetSigning(signingSvc)
+	draftSvc.SetSigning(signingSvc)
 	dashSvc := service.NewDashboardService(deps.Pool, peopleSvc, deptSvc)
 	misc := &miscHandler{settings: settingsSvc, dash: dashSvc, directory: directory, depts: deptSvc,
 		relevantGroups: func(ctx context.Context) map[string]bool {
@@ -301,6 +315,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	})
 	retention := service.NewRetentionService(deps.Pool, settingsSvc, lifecycleSvc, notifier, auditWriter)
 	maint.Add("retention", retention.Run)
+	maint.Add("purge stale onboardings", service.NewOnboardingPurge(deps.Pool, settingsSvc, auditWriter).Run)
 	maint.Add("workspace groups", wsSvc.SyncAllDepartments)
 	maint.Add("workspace clean-up", wsSvc.Cleanup)
 	if deps.Services != nil {
@@ -314,6 +329,14 @@ func NewRouter(deps Deps, version string) http.Handler {
 	// Service-to-service: bearer HR_DIRECTORY_TOKEN, no user sign-in.
 	directoryH := &directoryHandler{token: cfg.DirectoryToken, depts: deptSvc, bundles: bundleSvc}
 	r.With(tokenLimiter.Middleware).Get("/api/internal/directory/groups", directoryH.groups)
+	r.Get("/api/internal/stats", internalStatsHandler(cfg.StatsPullToken, deps.Pool))
+
+	// Public sign-hr APIs: opaque token in the path, no staff OIDC.
+	r.Route("/api/public/signing/{token}", func(pr chi.Router) {
+		pr.Get("/", signing.publicGet)
+		pr.Get("/pdf", signing.publicPDF)
+		pr.Post("/sign", signing.publicSign)
+	})
 
 	// Per signed-in person: the address lookup calls a third-party service
 	// (Photon), self-service writes are open to anyone signed in.
@@ -457,8 +480,31 @@ func NewRouter(deps Deps, version string) http.Handler {
 				or.With(require(authz.OnboardingManage)).Post("/", onboarding.start)
 				or.With(require(authz.PeopleRead)).Get("/{id}", onboarding.get)
 				or.With(require(authz.OnboardingManage)).Put("/{id}/details", onboarding.updateDetails)
+				or.With(require(authz.OnboardingManage)).Post("/{id}/submit-for-signing", onboarding.submitForSigning)
 				or.With(require(authz.AccessManage)).Post("/{id}/complete", onboarding.complete)
 				or.With(require(authz.OnboardingManage)).Post("/{id}/cancel", onboarding.cancel)
+				// Documents step: list the per-onboarding documents, try to
+				// send one (stub -> 503), waive or unwaive one. Required
+				// documents block Complete unless waived.
+				or.With(require(authz.PeopleRead)).Get("/{id}/documents", signing.listForOnboarding)
+				or.With(require(authz.PeopleRead)).Get("/{id}/documents/{docID}/pdf", signing.staffPDF)
+				or.With(require(authz.OnboardingManage)).Post("/{id}/documents", signing.attach)
+				or.With(require(authz.OnboardingManage)).Delete("/{id}/documents/{docID}", signing.detach)
+				or.With(require(authz.OnboardingManage)).Post("/{id}/documents/{docID}/send", signing.send)
+				or.With(require(authz.OnboardingManage)).Post("/{id}/documents/{docID}/waive", signing.waive)
+				or.With(require(authz.OnboardingManage)).Post("/{id}/documents/{docID}/unwaive", signing.unwaive)
+			})
+
+			// Form library: Settings → Forms (versioned PDFs + mappings).
+			api.Route("/document-templates", func(tr chi.Router) {
+				tr.With(require(authz.PeopleRead)).Get("/", signing.listTemplates)
+				tr.With(global(authz.SettingsManage)).Post("/inspect", signing.inspectPDF)
+				tr.With(global(authz.SettingsManage)).Post("/", signing.createTemplate)
+				tr.With(require(authz.PeopleRead)).Get("/{id}/versions", signing.listVersions)
+				tr.With(global(authz.SettingsManage)).Post("/{id}/versions", signing.publishVersion)
+				tr.With(require(authz.PeopleRead)).Get("/{id}", signing.getTemplate)
+				tr.With(global(authz.SettingsManage)).Put("/{id}", signing.updateTemplate)
+				tr.With(global(authz.SettingsManage)).Delete("/{id}", signing.deleteTemplate)
 			})
 
 			api.Route("/drafts", func(dr chi.Router) {

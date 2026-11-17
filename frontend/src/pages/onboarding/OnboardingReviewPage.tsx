@@ -1,17 +1,41 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from '@tanstack/react-router';
-import { AlertTriangle, CheckCircle2, GraduationCap, Loader2, Mail, Pencil, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, GraduationCap, Loader2, Mail, Pencil, X, XCircle } from 'lucide-react';
 
 import { resendPasswordSetup } from '@/api/lifecycle';
-import { cancelOnboarding, completeOnboarding, getOnboarding, type CompleteResult, type ProvisioningStatus } from '@/api/onboarding';
+import {
+  cancelOnboarding,
+  completeOnboarding,
+  getOnboarding,
+  submitForSigning,
+  type CompleteResult,
+  type ProvisioningStatus,
+} from '@/api/onboarding';
 import { addressLine, SOCIAL_NETWORKS } from '@/api/people';
 import { waitingText, type PendingGrant } from '@/api/roleGate';
+import {
+  fetchOnboardingDocumentPdf,
+  listOnboardingDocuments,
+  sendOnboardingDocument,
+  type OnboardingDocument,
+} from '@/api/signing';
 import { OnboardingSteps } from '@/components/OnboardingSteps';
 import { useDebugMode } from '@/lib/debug';
 import { undeliverableText, useEmailCheck } from '@/lib/emailCheck';
 import { formatPhone } from '@/lib/phone';
 import { useRoleLabels } from '@/lib/roles';
+import { ApiError } from '@/api/client';
+
+const DOC_STATUS: Record<OnboardingDocument['status'], string> = {
+  pending: 'Not sent',
+  sent: 'Waiting for signature',
+  signed: 'Signed',
+  waived: 'Waived',
+  stub_blocked: 'Blocked',
+};
+
+const cleared = (s: OnboardingDocument['status']) => s === 'signed' || s === 'waived';
 
 const FIELD_LABELS: Record<string, string> = {
   first_name: 'First name',
@@ -29,8 +53,8 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 /**
- * Step 3: verify everything, then complete. Completing queues a background
- * job (account, access, set-password email); the page follows it.
+ * Final step: check the packet, send forms for signing, wait, then a human
+ * Approves after verifying signatures — only then is the IdP account created.
  */
 export function OnboardingReviewPage() {
   const { id } = useParams({ from: '/app/onboarding/$id/review' });
@@ -39,18 +63,48 @@ export function OnboardingReviewPage() {
   const view = useQuery({
     queryKey: ['onboarding', id],
     queryFn: () => getOnboarding(id),
-    refetchInterval: (q) => (q.state.data?.draft.state === 'provisioning' ? 1500 : false),
+    refetchInterval: (q) => {
+      const st = q.state.data?.draft.state;
+      if (st === 'provisioning') return 1500;
+      if (st === 'pending_approval') return 4000;
+      return false;
+    },
+  });
+  const docs = useQuery({
+    queryKey: ['onboarding-docs', id],
+    queryFn: () => listOnboardingDocuments(id),
+    refetchInterval: () => (view.data?.draft.state === 'pending_approval' ? 4000 : false),
   });
   const roles = useRoleLabels();
   const debug = useDebugMode();
   const [confirmed, setConfirmed] = useState(false);
+  const [sigChecked, setSigChecked] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
+  const [banner, setBanner] = useState<string | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<OnboardingDocument | null>(null);
   const emailCheck = useEmailCheck(view.data?.person.email ?? '');
   const refresh = () => {
-    for (const key of [['onboarding', id], ['people'], ['drafts'], ['dashboard'], ['pending-grants']]) void qc.invalidateQueries({ queryKey: key });
+    for (const key of [['onboarding', id], ['onboarding-docs', id], ['people'], ['drafts'], ['dashboard'], ['pending-grants']]) {
+      void qc.invalidateQueries({ queryKey: key });
+    }
   };
 
+  const submit = useMutation({
+    mutationFn: () => submitForSigning(id),
+    onSuccess: (res) => {
+      setBanner(res.message + (res.sign_urls?.length ? ` First link: ${res.sign_urls[0]}` : ''));
+      refresh();
+    },
+  });
+  const sendOne = useMutation({
+    mutationFn: (docId: string) => sendOnboardingDocument(id, docId),
+    onSuccess: (res) => {
+      setBanner(`Sign link emailed. Copy if needed: ${res.sign_url}`);
+      refresh();
+    },
+    onError: (e: Error) => setBanner(e instanceof ApiError ? e.message : e.message),
+  });
   const complete = useMutation({ mutationFn: () => completeOnboarding(id), onSuccess: refresh });
   const cancel = useMutation({
     mutationFn: () => cancelOnboarding(id, cancelReason),
@@ -65,10 +119,11 @@ export function OnboardingReviewPage() {
   const { draft, person: p, department, missing_fields, provisioning } = view.data;
   const done = draft.state === 'active';
   const working = draft.state === 'provisioning';
+  const waitingSigs = draft.state === 'pending_approval';
   const result: CompleteResult | null =
     provisioning?.status === 'succeeded' && provisioning.result
       ? provisioning.result
-      : provisioning?.status === 'failed' && draft.state === 'draft'
+      : provisioning?.status === 'failed' && (draft.state === 'draft' || draft.state === 'pending_approval')
         ? { ok: false, error: provisioning.error, jobs: [], groups_applied: null, account_created: false, password_setup_email_sent: false }
         : null;
   const missing = Object.keys(missing_fields ?? {});
@@ -82,18 +137,29 @@ export function OnboardingReviewPage() {
   }
   const groups = [department?.group_name, ...(draft.roles ?? []).map((r) => r.group_name)].filter(Boolean);
   const name = p.nickname || p.first_name;
+  const docItems = docs.data?.items ?? [];
+  const blocking = docItems.filter((d) => !cleared(d.status));
+  const allSigned = docItems.length > 0 && blocking.length === 0;
+  const canCancel = draft.state === 'draft' || draft.state === 'pending_approval';
+  const canSendForms = draft.state === 'draft' || draft.state === 'pending_approval';
 
   return (
     <div className="p-6 max-w-4xl space-y-5">
       <Link to="/onboarding" className="text-sm text-muted-foreground hover:underline">← Onboarding</Link>
       <div>
-        <h1 className="text-2xl font-bold">{done ? 'Onboarding completed' : 'Review & complete'}</h1>
+        <h1 className="text-2xl font-bold">
+          {done ? 'Onboarding completed' : waitingSigs ? 'Waiting for signatures' : 'Review'}
+        </h1>
         <p className="text-sm text-muted-foreground">
-          {done ? `${p.display_name} has an account and is active.` : 'Check everything below. Nothing is created until you press Complete.'}
+          {done
+            ? `${p.display_name} has an account and is active.`
+            : waitingSigs
+              ? 'Forms are out for signing. No account is created until you check the signatures and Approve.'
+              : 'Check everything below. Sending for signing does not create an account — Approve after signatures does.'}
         </p>
       </div>
-      <OnboardingSteps current="review" id={id} locked={done || working} />
-
+      <OnboardingSteps current="review" id={id} locked={done || working || waitingSigs} />
+      {banner && <p className="rounded-md border border-border bg-muted/60 px-3 py-2 text-sm break-all">{banner}</p>}
       {working && <Working status={provisioning} />}
       {result && !working && <CompleteOutcome result={result} email={p.email} personId={p.id} debug={debug} />}
       {done && !result && (view.data.pending_grants?.length ?? 0) > 0 && (
@@ -112,7 +178,7 @@ export function OnboardingReviewPage() {
         </div>
       )}
 
-      <Card title="Volunteer" editTo={done ? undefined : 'details'} id={id}>
+      <Card title="Volunteer" editTo={done || waitingSigs ? undefined : 'details'} id={id}>
         <Row label="Legal name" value={p.legal_name} />
         <Row label="Nickname" value={p.nickname} />
         <Row label="Login name" value={p.username} />
@@ -124,8 +190,8 @@ export function OnboardingReviewPage() {
           </p>
         )}
         {p.org_email && <Row label="Organization email" value={p.org_email} />}
-        <Row label="Phone" value={formatPhone(p.phone)} />
         <Row label="Address" value={addressLine(p.address)} />
+        <Row label="Phone" value={formatPhone(p.phone)} />
         {socials.map((n) => (
           <Row key={n.key} label={n.label} value={p.social_handles[n.key]} />
         ))}
@@ -133,12 +199,12 @@ export function OnboardingReviewPage() {
         {ec.comments && <Row label="Emergency notes" value={ec.comments} />}
       </Card>
 
-      <Card title="Department" editTo={done ? undefined : 'details'} id={id}>
+      <Card title="Department" editTo={done || waitingSigs ? undefined : 'details'} id={id}>
         <Row label="Department" value={department?.name} />
         {debug && department && <Row label="Group" value={department.group_name} mono />}
       </Card>
 
-      <Card title="Access" editTo={done ? undefined : 'access'} id={id}>
+      <Card title="Access" editTo={done || waitingSigs ? undefined : 'access'} id={id}>
         {refs.length === 0 && <p className="text-sm text-muted-foreground">Only the department&apos;s access.</p>}
         {[...byModule].map(([mod, labels]) => (
           <Row key={mod} label={mod} value={labels.join(', ')} />
@@ -146,51 +212,191 @@ export function OnboardingReviewPage() {
         {debug && groups.length > 0 && <Row label="Groups" value={groups.join(', ')} mono />}
       </Card>
 
+      <Card title="Forms" editTo={done || waitingSigs ? undefined : 'documents'} id={id}>
+        {docs.isLoading && <p className="text-sm text-muted-foreground">Loading forms…</p>}
+        {docItems.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No forms attached.{' '}
+            {!done && !working && (
+              <Link to="/onboarding/$id/documents" params={{ id }} className="text-primary hover:underline">
+                Attach on Documents
+              </Link>
+            )}
+          </p>
+        ) : (
+          <ul className="space-y-2 text-sm">
+            {docItems.map((d) => {
+              const canSend =
+                canSendForms && (d.status === 'pending' || d.status === 'sent' || d.status === 'stub_blocked');
+              const canPreview = d.status === 'signed' || d.status === 'sent' || d.status === 'pending';
+              return (
+                <li key={d.id} className="flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    {d.template_name}
+                    {d.template_version ? ` · v${d.template_version}` : ''}
+                  </span>
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className={cleared(d.status) ? 'text-success' : 'text-warning'}>{DOC_STATUS[d.status]}</span>
+                    {canPreview && (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewDoc(d)}
+                        className="text-primary hover:underline"
+                      >
+                        {d.status === 'signed' ? 'Open preview' : 'Preview filled form'}
+                      </button>
+                    )}
+                    {canSend && (
+                      <button
+                        type="button"
+                        disabled={sendOne.isPending}
+                        onClick={() => sendOne.mutate(d.id)}
+                        className="rounded-pill border border-border px-3 py-1 text-xs hover:bg-muted"
+                      >
+                        {d.status === 'sent' ? 'Resend' : 'Send'}
+                      </button>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
+      {previewDoc && (
+        <SignedFormPreview
+          draftId={id}
+          doc={previewDoc}
+          onClose={() => setPreviewDoc(null)}
+        />
+      )}
+
       {!done && !working && (
         <section className="rounded-lg border border-border bg-card p-4 space-y-3">
-          <h2 className="font-semibold">When you press Complete</h2>
-          <ol className="list-decimal space-y-1 pl-5 text-sm">
-            <li>
-              An account is created for {name}. They sign in as <strong>{p.username || '…'}</strong>.
-            </li>
-            <li>They get access to: {roles.grouped(refs) || 'their department only'}.</li>
-            <li>
-              {name} gets an email at <strong>{p.email}</strong> with a link to set their password. After that they can
-              sign in to the portal and everything they have access to.
-            </li>
-            <li>They&apos;re marked as Active.</li>
-          </ol>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
-            I checked the details above.
-          </label>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => complete.mutate()}
-              disabled={!confirmed || missing.length > 0 || !department || complete.isPending}
-              className="rounded-pill bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60"
-            >
-              {complete.isPending ? 'Starting…' : 'Complete onboarding'}
-            </button>
-            <button type="button" onClick={() => setCancelling((c) => !c)}
-              className="inline-flex items-center gap-1 rounded-pill border border-border px-4 py-2 text-sm hover:bg-muted">
-              <XCircle className="h-4 w-4" /> Cancel onboarding
-            </button>
-          </div>
-          {complete.error && <p role="alert" className="text-sm text-destructive">{(complete.error as Error).message}</p>}
-          {cancelling && (
-            <form className="space-y-2 rounded-md border border-border p-3 text-sm" onSubmit={(e) => { e.preventDefault(); cancel.mutate(); }}>
-              <label className="block">
-                <span className="mb-1 block font-medium">Why is this onboarding cancelled? (optional)</span>
-                <input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2" />
+          {draft.state === 'draft' && (
+            <>
+              <h2 className="font-semibold">Send for signing</h2>
+              <ol className="list-decimal space-y-1 pl-5 text-sm">
+                <li>Locks this packet (details stay as shown above).</li>
+                <li>
+                  Emails a sign link to <strong>{p.email || 'the private email'}</strong> for each attached form (Mailpit
+                  locally).
+                </li>
+                <li>No IdP account yet — you Approve after signatures come back and you have checked them.</li>
+              </ol>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+                I checked the details above.
               </label>
-              <p className="text-xs text-muted-foreground">Nothing was created yet. {p.display_name} stays in HR as an applicant unless they have another department.</p>
-              {cancel.error && <p className="text-destructive">{(cancel.error as Error).message}</p>}
-              <button type="submit" disabled={cancel.isPending} className="rounded-pill bg-destructive px-4 py-1.5 font-semibold text-destructive-foreground">
-                Cancel onboarding
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => submit.mutate()}
+                  disabled={!confirmed || missing.length > 0 || !department || docItems.length === 0 || submit.isPending}
+                  className="rounded-pill bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60"
+                >
+                  {submit.isPending ? 'Sending…' : 'Send for signing'}
+                </button>
+                {docItems.length === 0 && (
+                  <Link to="/onboarding/$id/documents" params={{ id }} className="text-sm text-primary hover:underline">
+                    Attach forms first
+                  </Link>
+                )}
+              </div>
+              {submit.error && <p role="alert" className="text-sm text-destructive">{(submit.error as Error).message}</p>}
+            </>
+          )}
+
+          {waitingSigs && !allSigned && (
+            <>
+              <h2 className="font-semibold">Waiting for signatures</h2>
+              <p className="text-sm text-muted-foreground">
+                {blocking.length} form{blocking.length === 1 ? '' : 's'} still need a signature. The volunteer uses the
+                link in their email (sign-hr). This page refreshes automatically.
+              </p>
+              <button
+                type="button"
+                onClick={() => submit.mutate()}
+                disabled={submit.isPending}
+                className="rounded-pill border border-border px-4 py-2 text-sm hover:bg-muted"
+              >
+                {submit.isPending ? 'Resending…' : 'Resend sign links'}
               </button>
-            </form>
+              {submit.error && <p role="alert" className="text-sm text-destructive">{(submit.error as Error).message}</p>}
+            </>
+          )}
+
+          {waitingSigs && allSigned && (
+            <>
+              <h2 className="font-semibold">Approve &amp; create account</h2>
+              <p className="text-sm text-muted-foreground">
+                All forms are marked signed (or waived). Open each one if needed, confirm a human really signed, then
+                Approve. That creates the IdP account and sends the set-password email to {p.email}.
+              </p>
+              <ol className="list-decimal space-y-1 pl-5 text-sm">
+                <li>
+                  Account for {name} as <strong>{p.username || '…'}</strong>.
+                </li>
+                <li>Access: {roles.grouped(refs) || 'department only'}.</li>
+                <li>Set-password email to <strong>{p.email}</strong>.</li>
+              </ol>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={sigChecked} onChange={(e) => setSigChecked(e.target.checked)} />
+                I checked the signed forms and they look genuine.
+              </label>
+              <button
+                type="button"
+                onClick={() => complete.mutate()}
+                disabled={!sigChecked || complete.isPending}
+                className="rounded-pill bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60"
+              >
+                {complete.isPending ? 'Starting…' : 'Approve & create account'}
+              </button>
+              {complete.error && <p role="alert" className="text-sm text-destructive">{(complete.error as Error).message}</p>}
+            </>
+          )}
+
+          {canCancel && (
+            <>
+              <button
+                type="button"
+                onClick={() => setCancelling((c) => !c)}
+                className="inline-flex items-center gap-1 rounded-pill border border-border px-4 py-2 text-sm hover:bg-muted"
+              >
+                <XCircle className="h-4 w-4" /> Cancel onboarding
+              </button>
+              {cancelling && (
+                <form
+                  className="space-y-2 rounded-md border border-border p-3 text-sm"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    cancel.mutate();
+                  }}
+                >
+                  <label className="block">
+                    <span className="mb-1 block font-medium">Why is this onboarding cancelled? (optional)</span>
+                    <input
+                      value={cancelReason}
+                      onChange={(e) => setCancelReason(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2"
+                    />
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    Nothing was created yet. {p.display_name} stays in HR as an applicant unless they have another
+                    department.
+                  </p>
+                  {cancel.error && <p className="text-destructive">{(cancel.error as Error).message}</p>}
+                  <button
+                    type="submit"
+                    disabled={cancel.isPending}
+                    className="rounded-pill bg-destructive px-4 py-1.5 font-semibold text-destructive-foreground"
+                  >
+                    Cancel onboarding
+                  </button>
+                </form>
+              )}
+            </>
           )}
         </section>
       )}
@@ -292,7 +498,7 @@ function CompleteOutcome({ result, email, personId, debug }: { result: CompleteR
   );
 }
 
-function Card({ title, editTo, id, children }: { title: string; editTo?: 'details' | 'access'; id: string; children: ReactNode }) {
+function Card({ title, editTo, id, children }: { title: string; editTo?: 'details' | 'access' | 'documents'; id: string; children: ReactNode }) {
   return (
     <section className="rounded-lg border border-border bg-card p-4 space-y-2">
       <div className="flex items-center justify-between">
@@ -320,6 +526,96 @@ function Row({ label, value, hint, mono }: { label: string; value?: string; hint
         {value || <span className="text-destructive">missing</span>}
         {hint && <span className="block text-xs text-muted-foreground">{hint}</span>}
       </span>
+    </div>
+  );
+}
+
+/** In-app filled PDF preview — no download required. */
+function SignedFormPreview({
+  draftId,
+  doc,
+  onClose,
+}: {
+  draftId: string;
+  doc: OnboardingDocument;
+  onClose: () => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const title = `${doc.template_name}${doc.template_version ? ` · v${doc.template_version}` : ''}`;
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void fetchOnboardingDocumentPdf(draftId, doc.id)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message || 'Could not load the form');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [draftId, doc.id]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Preview ${title}`}
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="truncate font-semibold">{title}</h2>
+            <p className="text-xs text-muted-foreground">
+              Filled from the volunteer&apos;s HR profile — open to check before Approve.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-pill p-2 hover:bg-muted"
+            aria-label="Close preview"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+        <div className="min-h-0 flex-1 bg-muted">
+          {loading && (
+            <p className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading form…
+            </p>
+          )}
+          {error && <p className="p-6 text-sm text-destructive">{error}</p>}
+          {url && !loading && !error && (
+            <iframe title={title} src={`${url}#view=FitH`} className="h-[min(78vh,52rem)] w-full bg-background" />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

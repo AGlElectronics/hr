@@ -41,9 +41,31 @@ type Settings struct {
 	Retention RetentionSettings `json:"retention"`
 	// Workspace is the Google Workspace connector.
 	Workspace WorkspaceSettings `json:"workspace"`
+	// Signing controls form waiving and reports whether a real provider is connected.
+	Signing SigningSettings `json:"signing"`
+	// OnboardingAutoDeleteDays: employment drafts still in state "draft"
+	// older than this many days are deleted. 0 turns the purge off.
+	// When Den sets hr.onboarding_auto_delete_days, that value wins.
+	OnboardingAutoDeleteDays int `json:"onboarding_auto_delete_days"`
+	// OnboardingAutoDeleteManagedBy is "den" when Den sets the day count.
+	OnboardingAutoDeleteManagedBy string `json:"onboarding_auto_delete_managed_by,omitempty"`
 	// ManagedBy is "den" while HR is paired with Den: the organisation fields
 	// are read-only here, the HR-only fields stay editable.
 	ManagedBy string `json:"managed_by,omitempty"`
+}
+
+// SigningSettings are the signing stub's settings. No real signing
+// provider is wired yet: Send-for-signing always returns 503
+// signing_provider_not_connected. AllowStubSkip lets an HR admin waive a
+// document for local testing so Complete can proceed.
+type SigningSettings struct {
+	// AllowStubSkip turns on the "waive" action on onboarding documents
+	// (local testing only). Off by default so a real install cannot
+	// accidentally skip signatures.
+	AllowStubSkip bool `json:"allow_stub_skip"`
+	// ProviderConnected reports whether a real signing provider is wired.
+	// Always false in this version; the UI shows "stub only" everywhere.
+	ProviderConnected bool `json:"provider_connected"`
 }
 
 // IdentitySettings are the identity links HR shows. Each field set here
@@ -121,6 +143,8 @@ var hrOnlyKeys = map[string]bool{
 	"workspace_delete_after_days": true, "workspace_reminder_days": true,
 	"retention_enabled": true, "retention_applicant_days": true, "retention_paused_days": true,
 	"retention_offboarded_audit_days": true, "retention_warning_days": true,
+	"signing_allow_stub_skip":     true,
+	"onboarding_auto_delete_days": true,
 }
 
 // OrgSource supplies organisation settings from Den when HR is paired.
@@ -180,7 +204,8 @@ func (s *SettingsService) Get(ctx context.Context) (*Settings, error) {
 	}
 	defer rows.Close()
 	out := &Settings{UsernameTemplate: DefaultUsernameTemplate, OrgEmailTemplate: DefaultOrgEmailTemplate,
-		AddressLookupURL: DefaultAddressLookupURL, Retention: DefaultRetention, Workspace: DefaultWorkspace}
+		AddressLookupURL: DefaultAddressLookupURL, Retention: DefaultRetention, Workspace: DefaultWorkspace,
+		OnboardingAutoDeleteDays: 30}
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err != nil {
@@ -235,6 +260,10 @@ func (s *SettingsService) Get(ctx context.Context) (*Settings, error) {
 			out.Retention.OffboardedAuditDays = atoiOr(v, DefaultRetention.OffboardedAuditDays)
 		case "retention_warning_days":
 			out.Retention.WarningDays = atoiOr(v, DefaultRetention.WarningDays)
+		case "signing_allow_stub_skip":
+			out.Signing.AllowStubSkip = v == "true"
+		case "onboarding_auto_delete_days":
+			out.OnboardingAutoDeleteDays = atoiOr(v, 30)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -242,6 +271,9 @@ func (s *SettingsService) Get(ctx context.Context) (*Settings, error) {
 	}
 	rows.Close()
 	out.Workspace.Available = s.workspaceAvailable
+	// This version of HR ships the signing stub only; a real provider is
+	// not wired yet (see docs/modules/hr/signing.md).
+	out.Signing.ProviderConnected = false
 	eff := out.Identity
 	if s.paired() {
 		out.ManagedBy = "den"
@@ -263,6 +295,7 @@ func (s *SettingsService) Get(ctx context.Context) (*Settings, error) {
 			}
 		}
 		applyDenRetention(&out.Retention, s.den.ModuleSettings())
+		applyDenOnboardingAutoDelete(out, s.den.ModuleSettings())
 	}
 	if eff.StaffMode == "" {
 		eff.StaffMode = "own"
@@ -413,7 +446,21 @@ func (in *Settings) Normalize() map[string]string {
 	if rt.WarningDays < 1 || rt.WarningDays > 90 {
 		fields["retention.warning_days"] = "between 1 and 90 days"
 	}
+	if in.OnboardingAutoDeleteDays < 0 || in.OnboardingAutoDeleteDays > maxRetentionDays {
+		fields["onboarding_auto_delete_days"] = fmt.Sprintf("between 0 and %d days (0 = never auto-delete)", maxRetentionDays)
+	}
 	return fields
+}
+
+// applyDenOnboardingAutoDelete overlays Den's hr.onboarding_auto_delete_days.
+func applyDenOnboardingAutoDelete(out *Settings, ms *denlink.ModuleSettings) {
+	if ms == nil {
+		return
+	}
+	if d, ok := ms.Days("hr.onboarding_auto_delete_days"); ok && d >= 0 {
+		out.OnboardingAutoDeleteDays = min(d, maxRetentionDays)
+		out.OnboardingAutoDeleteManagedBy = "den"
+	}
 }
 
 // Update validates and stores the settings. While paired with Den only the
@@ -485,6 +532,11 @@ func (s *SettingsService) Update(ctx context.Context, actor string, in Settings)
 	values["retention_paused_days"] = i(in.Retention.PausedDays)
 	values["retention_offboarded_audit_days"] = i(in.Retention.OffboardedAuditDays)
 	values["retention_warning_days"] = i(in.Retention.WarningDays)
+	values["signing_allow_stub_skip"] = b(in.Signing.AllowStubSkip)
+	if current.OnboardingAutoDeleteManagedBy == "den" {
+		in.OnboardingAutoDeleteDays = current.OnboardingAutoDeleteDays
+	}
+	values["onboarding_auto_delete_days"] = i(in.OnboardingAutoDeleteDays)
 	for k, v := range values {
 		if s.paired() && !hrOnlyKeys[k] {
 			continue

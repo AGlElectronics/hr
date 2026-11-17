@@ -35,6 +35,8 @@ type ProvisionService struct {
 	sendSetup bool
 	// workspace creates the Google Workspace account (nil: off).
 	workspace *WorkspaceService
+	// signing blocks Complete while required onboarding forms are unsigned.
+	signing *SigningService
 }
 
 // NewProvisionService wires a ProvisionService. idp is nil in off mode.
@@ -53,6 +55,9 @@ func (s *ProvisionService) SetDepartments(d *DepartmentService) { s.depts = d }
 
 // SetWorkspace creates Google Workspace accounts after the IDP account.
 func (s *ProvisionService) SetWorkspace(w *WorkspaceService) { s.workspace = w }
+
+// SetSigning blocks Complete while an attached onboarding form is not signed or waived.
+func (s *ProvisionService) SetSigning(sig *SigningService) { s.signing = sig }
 
 // Register runs onboarding completions on the job queue.
 func (s *ProvisionService) Register(q *JobQueue) {
@@ -94,15 +99,92 @@ type ProvisioningStatus struct {
 	QueuedAt    time.Time       `json:"queued_at"`
 }
 
-// Complete checks an onboarding HR reviewed and queues its completion. The
-// onboarding stays "provisioning" until the job is done; on failure it goes
-// back to "draft" so HR can fix things and retry.
+// SubmitForSigningResult is returned after locking the packet and emailing sign links.
+type SubmitForSigningResult struct {
+	Draft    *domain.EmploymentDraft `json:"draft"`
+	Sent     int                     `json:"sent"`
+	SignURLs []string                `json:"sign_urls,omitempty"`
+	Message  string                  `json:"message"`
+}
+
+// SubmitForSigning locks the onboarding (pending_approval), emails a sign link
+// for every attached form that is still pending/sent, and does not create an
+// IdP account. HR Approves later via Complete after checking the signatures.
+func (s *ProvisionService) SubmitForSigning(ctx context.Context, actor string, draftID uuid.UUID) (*SubmitForSigningResult, error) {
+	draft, err := s.drafts.Get(ctx, draftID)
+	if err != nil {
+		return nil, err
+	}
+	if draft.State != domain.DraftStateDraft && draft.State != domain.DraftStatePendingApproval {
+		return nil, httperror.Conflict(fmt.Sprintf("onboarding is already %q", draft.State))
+	}
+	if draft.DepartmentID == nil {
+		return nil, httperror.Validation("pick a department before sending forms", map[string]string{"department_id": "required"})
+	}
+	person, err := s.people.Get(ctx, draft.PersonID)
+	if err != nil {
+		return nil, err
+	}
+	if missing := MissingFields(person); len(missing) > 0 {
+		return nil, httperror.Validation("volunteer profile is incomplete", missing)
+	}
+	if person.IsBanned {
+		return nil, httperror.Conflict("this person is banned and cannot be onboarded")
+	}
+	if s.signing == nil {
+		return nil, httperror.Conflict("signing is not configured")
+	}
+	docs, err := s.signing.ListForDraft(ctx, draftID)
+	if err != nil {
+		return nil, err
+	}
+	if len(docs) == 0 {
+		return nil, httperror.Conflict("attach at least one form on the Documents step before sending for signing")
+	}
+	sent := 0
+	urls := []string{}
+	for _, d := range docs {
+		if d.Status == DocSigned || d.Status == DocWaived {
+			continue
+		}
+		res, err := s.signing.SendForSigning(ctx, actor, draftID, d.ID)
+		if err != nil {
+			return nil, err
+		}
+		sent++
+		if res.SignURL != "" {
+			urls = append(urls, res.SignURL)
+		}
+	}
+	updated := draft
+	if draft.State == domain.DraftStateDraft {
+		updated, err = s.drafts.Transition(ctx, draft.ID, domain.DraftStatePendingApproval)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := s.drafts.audit.Record(ctx, actor, "onboarding.submit_for_signing", "employment_draft", draftID, map[string]any{
+		"sent": sent, "forms": len(docs),
+	}); err != nil {
+		return nil, err
+	}
+	msg := "Sign links sent. The account is not created yet — wait for signatures, check them, then Approve."
+	if sent == 0 {
+		msg = "Forms already sent or cleared. Waiting for signatures (or Approve when they are signed)."
+	}
+	return &SubmitForSigningResult{Draft: updated, Sent: sent, SignURLs: urls, Message: msg}, nil
+}
+
+// Complete is the human Approve step: after attached forms are signed (or
+// waived) and HR has checked them, queue IdP provisioning. Onboardings with
+// no forms may still Approve from draft. With forms attached, the draft must
+// be pending_approval first (Submit for signing).
 func (s *ProvisionService) Complete(ctx context.Context, actor string, draftID uuid.UUID) (*CompleteResult, error) {
 	draft, err := s.drafts.Get(ctx, draftID)
 	if err != nil {
 		return nil, err
 	}
-	if draft.State != domain.DraftStateDraft {
+	if draft.State != domain.DraftStateDraft && draft.State != domain.DraftStatePendingApproval {
 		return nil, httperror.Conflict(fmt.Sprintf("onboarding is already %q", draft.State))
 	}
 	if draft.DepartmentID == nil {
@@ -117,6 +199,27 @@ func (s *ProvisionService) Complete(ctx context.Context, actor string, draftID u
 	}
 	if person.IsBanned {
 		return nil, httperror.Conflict("this person is banned and cannot be onboarded")
+	}
+	if s.signing != nil {
+		docs, err := s.signing.ListForDraft(ctx, draftID)
+		if err != nil {
+			return nil, err
+		}
+		if len(docs) > 0 && draft.State != domain.DraftStatePendingApproval {
+			return nil, httperror.Conflict("send forms for signing first (Review → Send for signing); Approve creates the account only after signatures are back and you have checked them")
+		}
+		blocking, err := s.signing.BlockingDocs(ctx, draftID)
+		if err != nil {
+			return nil, err
+		}
+		if len(blocking) > 0 {
+			names := make(map[string]string, len(blocking))
+			for _, d := range blocking {
+				names[d.TemplateName] = d.Status
+			}
+			return nil, httperror.Conflict("attached forms are not signed yet; wait for the volunteer (or waive on Documents), then Approve after you have checked the signatures").
+				WithDetails(map[string]any{"blocking_documents": names})
+		}
 	}
 	if s.jobs == nil {
 		return nil, httperror.Internal(errors.New("provisioning job queue not wired"))

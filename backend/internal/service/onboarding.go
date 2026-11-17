@@ -63,8 +63,8 @@ func (s *OnboardingService) Cancel(ctx context.Context, actor string, draftID uu
 	if err != nil {
 		return nil, err
 	}
-	if d.State != domain.DraftStateDraft {
-		return nil, httperror.Conflict("only an onboarding that is still a draft can be cancelled (it is " + string(d.State) + ")")
+	if d.State != domain.DraftStateDraft && d.State != domain.DraftStatePendingApproval {
+		return nil, httperror.Conflict("only an onboarding that is still waiting (draft or pending approval) can be cancelled (it is " + string(d.State) + ")")
 	}
 	if _, err := s.drafts.Transition(ctx, draftID, domain.DraftStateRejected); err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func (s *OnboardingService) Cancel(ctx context.Context, actor string, draftID uu
 	if p.Status == domain.PersonOnboarding {
 		var others bool
 		if err := s.people.pool.QueryRow(ctx, `
-SELECT EXISTS (SELECT 1 FROM employment_drafts WHERE person_id = $1 AND id <> $2 AND state IN ('draft', 'provisioning', 'active'))`,
+SELECT EXISTS (SELECT 1 FROM employment_drafts WHERE person_id = $1 AND id <> $2 AND state IN ('draft', 'pending_approval', 'provisioning', 'active'))`,
 			d.PersonID, draftID).Scan(&others); err != nil {
 			return nil, httperror.Internal(err)
 		}
