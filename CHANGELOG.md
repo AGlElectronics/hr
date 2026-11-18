@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `sign-frontend/Dockerfile` COPY paths assume the module-root build context
+  (CI and Compose). Staff onboarding pages no longer leave unused `res`
+  bindings that failed TypeScript `noUnusedLocals`.
+
 ### Security
 
 - sign-hr nginx proxies only `/api/public/signing/` and `/api/brand` (not the

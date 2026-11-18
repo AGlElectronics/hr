@@ -99,7 +99,7 @@ export function OnboardingReviewPage() {
   });
   const sendOne = useMutation({
     mutationFn: (docId: string) => sendOnboardingDocument(id, docId),
-    onSuccess: (res) => {
+    onSuccess: () => {
       setBanner('Sign link emailed to the volunteer.');
       refresh();
     },
