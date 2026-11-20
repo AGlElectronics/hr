@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Bug,
   Building2,
+  FileSignature,
   FileSpreadsheet,
   Inbox,
   KeyRound,
@@ -38,6 +39,7 @@ type NavItem = {
 const NAV: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/onboarding', label: 'Onboarding', icon: UserPlus },
+  { to: '/forms', label: 'Forms', icon: FileSignature, perm: 'settings.manage', global: true },
   { to: '/review', label: 'Review queue', icon: Inbox, perm: 'review.manage' },
   { to: '/people', label: 'People', icon: Users },
   { to: '/departments', label: 'Departments', icon: Building2 },

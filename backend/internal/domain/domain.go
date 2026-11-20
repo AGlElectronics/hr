@@ -176,6 +176,9 @@ type EmploymentDraft struct {
 	// PersonName and DepartmentName are filled in lists.
 	PersonName     string `json:"person_name,omitempty"`
 	DepartmentName string `json:"department_name,omitempty"`
+	// ReadyToApprove is set on list responses when state is pending_approval
+	// and every attached form is signed or waived (Approve is unblocked).
+	ReadyToApprove bool `json:"ready_to_approve,omitempty"`
 }
 
 // RolePlan is a desired role / group assignment for a draft. On provisioning
@@ -232,6 +235,9 @@ type DraftState string
 const (
 	// DraftStateDraft: HR is still editing. No external systems touched.
 	DraftStateDraft DraftState = "draft"
+	// DraftStatePendingApproval: packet locked; sign links sent; waiting for
+	// volunteer signatures and a human Approve before any IdP account exists.
+	DraftStatePendingApproval DraftState = "pending_approval"
 	// DraftStateProvisioning: a provisioning job is in flight.
 	DraftStateProvisioning DraftState = "provisioning"
 	// DraftStateActive: completed; the account exists and the person was emailed.
@@ -244,6 +250,7 @@ const (
 func AllDraftStates() []DraftState {
 	return []DraftState{
 		DraftStateDraft,
+		DraftStatePendingApproval,
 		DraftStateProvisioning,
 		DraftStateActive,
 		DraftStateRejected,
@@ -277,16 +284,24 @@ const (
 
 // draftTransitions encodes the legal state transitions:
 //
-//	draft        -> provisioning | rejected
-//	provisioning -> active | rejected | draft
+//	draft             -> pending_approval | provisioning | rejected
+//	pending_approval  -> provisioning | draft | rejected
+//	provisioning      -> active | rejected | draft
 //
-// provisioning -> active is the onboarding "complete" path (HR reviewed on
-// the overview page); provisioning -> draft lets HR retry after a connector
-// failure; draft -> rejected cancels an onboarding. Rejected and active are
+// draft -> pending_approval locks the packet and sends sign links. HR Approves
+// from pending_approval only after attached forms are signed (or waived) and a
+// human has checked them — that moves to provisioning. draft -> provisioning
+// remains for onboardings with no forms attached. Rejected and active are
 // terminal.
 var draftTransitions = map[DraftState]map[DraftState]bool{
 	DraftStateDraft: {
+		DraftStatePendingApproval: true,
+		DraftStateProvisioning:    true,
+		DraftStateRejected:        true,
+	},
+	DraftStatePendingApproval: {
 		DraftStateProvisioning: true,
+		DraftStateDraft:        true,
 		DraftStateRejected:     true,
 	},
 	DraftStateProvisioning: {

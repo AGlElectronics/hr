@@ -48,5 +48,7 @@ jobs:
           {"name": "migrate", "dockerfile": "infra/Dockerfile.migrate", "shell-less": true},
           {"name": "frontend", "dockerfile": "infra/Dockerfile.frontend",
            "build-args": ["HR_VERSION={version}"],
+           "allow-root": false},
+          {"name": "sign", "dockerfile": "sign-frontend/Dockerfile",
            "allow-root": false}
         ]

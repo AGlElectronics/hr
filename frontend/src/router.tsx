@@ -18,7 +18,9 @@ import { OnboardingListPage } from '@/pages/onboarding/OnboardingListPage';
 import { OnboardingDetailsPage, type OnboardingPrefill } from '@/pages/onboarding/OnboardingDetailsPage';
 import { KeycloakPage } from '@/pages/KeycloakPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { FormsPage } from '@/pages/FormsPage';
 import { OnboardingAccessPage } from '@/pages/onboarding/OnboardingAccessPage';
+import { OnboardingDocumentsPage } from '@/pages/onboarding/OnboardingDocumentsPage';
 import { OnboardingReviewPage } from '@/pages/onboarding/OnboardingReviewPage';
 import { AccessGroupsPage } from '@/pages/AccessGroupsPage';
 import { AuditPage } from '@/pages/AuditPage';
@@ -129,6 +131,12 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
+const formsRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/forms',
+  component: FormsPage,
+});
+
 const onboardingListRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: '/onboarding',
@@ -158,6 +166,12 @@ const onboardingAccessRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: '/onboarding/$id/access',
   component: OnboardingAccessPage,
+});
+
+const onboardingDocumentsRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/onboarding/$id/documents',
+  component: OnboardingDocumentsPage,
 });
 
 const onboardingReviewRoute = createRoute({
@@ -221,9 +235,11 @@ const routeTree = rootRoute.addChildren([
     onboardingNewRoute,
     onboardingDetailsRoute,
     onboardingAccessRoute,
+    onboardingDocumentsRoute,
     onboardingReviewRoute,
     departmentsRoute,
     keycloakRoute,
+    formsRoute,
     settingsRoute,
   ]),
 ]);

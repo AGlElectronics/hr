@@ -95,6 +95,8 @@ type Config struct {
 	// modules (HR_SERVICE_TOKEN), and accepted on HR's own catalog. Every
 	// module that checks it must have the same value.
 	HRServiceToken string
+	// StatsPullToken protects GET /api/internal/stats for Stats. Empty disables it.
+	StatsPullToken string
 
 	// ProvisionerMode is IDP_PROVISIONER_MODE: manage, link or off.
 	ProvisionerMode string
@@ -165,6 +167,11 @@ type Config struct {
 	SMTPFrom     string
 	SMTPFromName string
 
+	// SigningPublicURL is the public sign-hr host used in emails
+	// (https://sign-hr.conservices.test locally; production like
+	// https://sign-hr.taire.gay). No trailing slash.
+	SigningPublicURL string
+
 	// Den is the pairing configuration (DEN_MODE, DEN_INTERNAL_URL,
 	// DEN_ALLOWED_HOSTS, DEN_LINK_ENCRYPTION_KEY[_PREVIOUS], APP_ENV).
 	Den denlink.Config
@@ -220,6 +227,7 @@ func Load() (*Config, error) {
 		LeadGroups:                     splitCSV(getEnv("HR_LEAD_GROUPS", "hr-lead")),
 		GroupMatch:                     groups,
 		HRServiceToken:                 strings.TrimSpace(getEnv("HR_SERVICE_TOKEN", "")),
+		StatsPullToken:                 strings.TrimSpace(getEnv("STATS_PULL_TOKEN", "")),
 		ProvisionerMode:                strings.ToLower(getEnv("IDP_PROVISIONER_MODE", ProvisionerManage)),
 		KeycloakBaseURL:                getEnv("KEYCLOAK_BASE_URL", ""),
 		KeycloakRealm:                  getEnv("KEYCLOAK_REALM", "conservices"),
@@ -249,6 +257,7 @@ func Load() (*Config, error) {
 		SMTPPassword:                   getEnv("SMTP_PASSWORD", ""),
 		SMTPFrom:                       getEnv("SMTP_FROM", ""),
 		SMTPFromName:                   getEnv("SMTP_FROM_NAME", ""),
+		SigningPublicURL:               strings.TrimRight(getEnv("SIGNING_PUBLIC_URL", "https://sign-hr.conservices.test"), "/"),
 		Den:                            den,
 		OutboundAllowedHosts:           splitCSV(getEnv("OUTBOUND_ALLOWED_HOSTS", "")),
 		CORSAllowedOrigins:             splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3003")),
@@ -270,6 +279,9 @@ func (c *Config) validate(errs []string) error {
 	}
 	if c.HRServiceToken != "" && len(c.HRServiceToken) < MinServiceTokenLength {
 		errs = append(errs, fmt.Sprintf("HR_SERVICE_TOKEN must be at least %d characters (openssl rand -hex 32)", MinServiceTokenLength))
+	}
+	if c.StatsPullToken != "" && len(c.StatsPullToken) < MinServiceTokenLength {
+		errs = append(errs, fmt.Sprintf("STATS_PULL_TOKEN must be at least %d characters (openssl rand -hex 32)", MinServiceTokenLength))
 	}
 	// AUTH_MODE=dev outside development is refused by authbase.FromEnv.
 	if c.AuthMode == AuthModeOIDC {

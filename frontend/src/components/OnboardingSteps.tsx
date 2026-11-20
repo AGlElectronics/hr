@@ -6,7 +6,8 @@ import { cn } from '@/lib/utils';
 const STEPS = [
   { key: 'details', label: 'Volunteer & department' },
   { key: 'access', label: 'Access' },
-  { key: 'review', label: 'Review & complete' },
+  { key: 'documents', label: 'Documents' },
+  { key: 'review', label: 'Review & approve' },
 ] as const;
 
 export type OnboardingStep = (typeof STEPS)[number]['key'];

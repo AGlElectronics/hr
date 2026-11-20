@@ -55,10 +55,20 @@ export const getOnboarding = (id: string) => apiRequest<OnboardingView>(`/api/on
 export const updateOnboardingDetails = (id: string, body: OnboardingDetails) =>
   apiRequest<OnboardingView>(`/api/onboardings/${id}/details`, { method: 'PUT', body });
 
-/** Queues the completion; poll getOnboarding until provisioning.status is succeeded or failed. */
+export type SubmitForSigningResult = {
+  draft: EmploymentDraft;
+  sent: number;
+  message: string;
+};
+
+/** Locks the packet, emails sign links, moves to pending_approval. No IdP account yet. */
+export const submitForSigning = (id: string) =>
+  apiRequest<SubmitForSigningResult>(`/api/onboardings/${id}/submit-for-signing`, { method: 'POST' });
+
+/** Human Approve after signatures: queues IdP provisioning. Poll getOnboarding for the job. */
 export const completeOnboarding = (id: string) =>
   apiRequest<CompleteResult>(`/api/onboardings/${id}/complete`, { method: 'POST' });
 
-/** Cancels an onboarding that is still a draft. */
+/** Cancels an onboarding that is still draft or pending_approval. */
 export const cancelOnboarding = (id: string, reason: string) =>
   apiRequest<OnboardingView>(`/api/onboardings/${id}/cancel`, { method: 'POST', body: { reason } });

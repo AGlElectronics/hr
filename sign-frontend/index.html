@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign — HR</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Montserrat:wght@600;700;800&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        color-scheme: light;
+        --background: #f5f5f7;
+        --card: #ffffff;
+        --foreground: #1c1b22;
+        --muted-foreground: #71717a;
+        --border: #e4e4e7;
+        --primary: #e44763;
+        --primary-foreground: #ffffff;
+        --primary-hover: #c93a53;
+        --accent: #fce7eb;
+        --font-body: Inter, system-ui, sans-serif;
+        --font-heading: Montserrat, system-ui, sans-serif;
+        --radius: 10px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: var(--font-body);
+        background:
+          radial-gradient(1200px 480px at 50% -120px, color-mix(in srgb, var(--primary) 14%, transparent), transparent 70%),
+          var(--background);
+        color: var(--foreground);
+        line-height: 1.45;
+      }
+      .shell {
+        width: min(68rem, calc(100% - 2rem));
+        margin: 0 auto;
+        padding: 1.5rem 0 3.5rem;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+        margin-bottom: 1.75rem;
+      }
+      .topbar img {
+        height: 2.75rem;
+        width: auto;
+        max-width: 8rem;
+        object-fit: contain;
+      }
+      .topbar .org {
+        font-family: var(--font-heading);
+        font-weight: 800;
+        font-size: clamp(1.35rem, 2.4vw, 1.85rem);
+        letter-spacing: -0.03em;
+        line-height: 1.1;
+      }
+      .topbar .meta {
+        margin-top: 0.15rem;
+        font-size: 0.8rem;
+        color: var(--muted-foreground);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .hero {
+        margin-bottom: 1.25rem;
+      }
+      .hero h1 {
+        font-family: var(--font-heading);
+        font-size: clamp(1.35rem, 2.2vw, 1.7rem);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin: 0 0 0.35rem;
+      }
+      .hero .sub {
+        margin: 0;
+        color: var(--muted-foreground);
+        font-size: 0.98rem;
+      }
+      .stage {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+      }
+      .pdf-wrap {
+        background: #ececef;
+        min-height: 32rem;
+        display: flex;
+        align-items: stretch;
+        justify-content: center;
+      }
+      #pdfFrame {
+        width: 100%;
+        min-height: min(78vh, 56rem);
+        border: 0;
+        background: #ececef;
+      }
+      .pdf-fallback {
+        width: 100%;
+        padding: 3rem 1.25rem;
+        text-align: center;
+        color: var(--muted-foreground);
+      }
+      .footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem 1rem;
+        padding: 1rem 1.15rem;
+        border-top: 1px solid var(--border);
+        background: color-mix(in srgb, var(--card) 92%, var(--accent));
+      }
+      .footer .hint {
+        flex: 1 1 14rem;
+        margin: 0;
+        font-size: 0.82rem;
+        color: var(--muted-foreground);
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+        margin-left: auto;
+      }
+      button, a.btn {
+        appearance: none;
+        border: 0;
+        border-radius: 8px;
+        padding: 0.7rem 1.15rem;
+        font-weight: 600;
+        font-family: inherit;
+        font-size: 0.95rem;
+        cursor: pointer;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.6rem;
+      }
+      button.primary {
+        background: var(--primary);
+        color: var(--primary-foreground);
+      }
+      button.primary:hover { background: var(--primary-hover); }
+      button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+      a.btn {
+        background: var(--card);
+        color: var(--foreground);
+        border: 1px solid var(--border);
+      }
+      a.btn:hover { background: var(--background); }
+      .banner {
+        margin: 0;
+        padding: 0.85rem 1.15rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.95rem;
+      }
+      .banner.ok {
+        background: color-mix(in srgb, var(--primary) 10%, var(--card));
+        color: var(--foreground);
+      }
+      .banner.err, .err { color: #b91c1c; }
+      .muted { color: var(--muted-foreground); }
+      .signed-note {
+        margin: 0;
+        font-weight: 600;
+        color: var(--foreground);
+      }
+      @media (max-width: 640px) {
+        .shell { width: calc(100% - 1.25rem); padding-top: 1rem; }
+        .footer { flex-direction: column; align-items: stretch; }
+        .actions { margin-left: 0; width: 100%; }
+        .actions > * { flex: 1 1 auto; }
+        #pdfFrame { min-height: 70vh; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar" id="brandBar">
+        <div>
+          <div class="org" id="orgName">Con Services</div>
+          <div class="meta">Form signing</div>
+        </div>
+      </header>
+      <div id="app"><p class="muted">Loading…</p></div>
+    </div>
+    <script>
+      const app = document.getElementById('app');
+      const token = (location.pathname.match(/\/s\/([^/]+)/) || [])[1];
+      let pdfObjectUrl = null;
+
+      async function loadBrand() {
+        try {
+          const res = await fetch('/api/brand', { cache: 'no-store', headers: { Accept: 'application/json' } });
+          if (!res.ok) return;
+          applyBrand(await res.json());
+        } catch (_) { /* standalone defaults */ }
+      }
+
+      function isColor(v) {
+        return typeof v === 'string' && /^(#[0-9a-f]{3,8}|rgb|hsl|oklch|color\()/i.test(v.trim());
+      }
+
+      function fontStack(name) {
+        const n = String(name || '').trim().replace(/"/g, '');
+        if (!n) return '';
+        if (/inter/i.test(n)) return 'Inter, system-ui, sans-serif';
+        if (/montserrat/i.test(n)) return 'Montserrat, system-ui, sans-serif';
+        return '"' + n + '", system-ui, sans-serif';
+      }
+
+      function applyBrand(brand) {
+        const theme = brand.theme || {};
+        const typography = brand.typography || {};
+        const root = document.documentElement.style;
+        if (isColor(theme.primary)) root.setProperty('--primary', theme.primary.trim());
+        if (isColor(theme.primary_hover)) root.setProperty('--primary-hover', theme.primary_hover.trim());
+        if (isColor(theme.accent)) root.setProperty('--accent', theme.accent.trim());
+        if (isColor(theme.background)) root.setProperty('--card', theme.background.trim());
+        if (isColor(theme.muted)) root.setProperty('--background', theme.muted.trim());
+        if (isColor(theme.foreground)) root.setProperty('--foreground', theme.foreground.trim());
+        if (isColor(theme.border)) root.setProperty('--border', theme.border.trim());
+        const heading = fontStack(typography.heading_font || theme.heading_font);
+        const body = fontStack(typography.body_font || theme.body_font);
+        if (heading) root.setProperty('--font-heading', heading);
+        if (body) root.setProperty('--font-body', body);
+
+        const org =
+          (brand.copy && brand.copy.convention_name) ||
+          brand.organization_name ||
+          'Con Services';
+        document.getElementById('orgName').textContent = org;
+        document.title = 'Sign · ' + org;
+
+        if (brand.logo_url) {
+          const bar = document.getElementById('brandBar');
+          if (!bar.querySelector('img')) {
+            const img = document.createElement('img');
+            img.src = brand.logo_url;
+            img.alt = org;
+            bar.insertBefore(img, bar.firstChild);
+          }
+        }
+      }
+
+      async function load() {
+        await loadBrand();
+        if (!token) {
+          app.innerHTML = '<div class="hero"><h1>Missing signing link</h1><p class="sub">Open the link from your email.</p></div>';
+          return;
+        }
+        try {
+          const res = await fetch('/api/public/signing/' + encodeURIComponent(token));
+          const text = await res.text();
+          let data = null;
+          try {
+            data = text ? JSON.parse(text) : null;
+          } catch (_) {
+            throw new Error(
+              res.ok
+                ? 'Signing API returned a non-JSON response'
+                : (text && text.trim()) || res.statusText || 'Could not reach the signing API',
+            );
+          }
+          if (!res.ok) throw new Error(data?.error?.message || res.statusText || 'Request failed');
+          await render(data);
+        } catch (e) {
+          app.innerHTML = '<div class="hero"><h1>Could not open this form</h1><p class="err">' + escapeHtml(e.message) + '</p></div>';
+        }
+      }
+
+      async function loadFilledPdf() {
+        if (pdfObjectUrl) {
+          URL.revokeObjectURL(pdfObjectUrl);
+          pdfObjectUrl = null;
+        }
+        const res = await fetch('/api/public/signing/' + encodeURIComponent(token) + '/pdf');
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error?.message || res.statusText);
+        }
+        const blob = await res.blob();
+        pdfObjectUrl = URL.createObjectURL(blob);
+        return pdfObjectUrl;
+      }
+
+      async function render(data) {
+        const signed = data.status === 'signed';
+        const title = escapeHtml(data.form_name) + (data.form_version ? ' · v' + data.form_version : '');
+        const forWhom = escapeHtml(data.signer_name || 'you');
+
+        let stageInner = '<div class="pdf-fallback">No PDF attached to this version.</div>';
+        if (data.has_pdf) {
+          stageInner =
+            (data.message ? '<p class="banner ok">' + escapeHtml(data.message) + '</p>' : '') +
+            '<div class="pdf-wrap"><div class="pdf-fallback" id="pdfStatus">Loading filled form…</div>' +
+            '<iframe id="pdfFrame" title="Form PDF" hidden></iframe></div>';
+        } else if (data.message) {
+          stageInner = '<p class="banner ok">' + escapeHtml(data.message) + '</p>' + stageInner;
+        }
+
+        const actions = signed
+          ? '<p class="signed-note">Signed — HR will review before creating your account.</p>'
+          : '<button class="primary" id="signBtn" type="button">Sign</button>';
+        const download = data.has_pdf
+          ? '<a class="btn" id="downloadBtn" href="/api/public/signing/' + encodeURIComponent(token) + '/pdf?download=1">Download filled PDF</a>'
+          : '';
+
+        app.innerHTML =
+          '<div class="hero">' +
+          '<h1>' + title + '</h1>' +
+          '<p class="sub">Prepared for ' + forWhom + '</p>' +
+          '</div>' +
+          '<section class="stage">' +
+          stageInner +
+          '<div class="footer">' +
+          '<p class="hint">Fields come from your HR profile via the mappings set by HR. Sign confirms you have reviewed this form.</p>' +
+          '<div class="actions">' + actions + download + '</div>' +
+          '</div>' +
+          '</section>';
+
+        const btn = document.getElementById('signBtn');
+        if (btn) btn.addEventListener('click', sign);
+
+        if (data.has_pdf) {
+          try {
+            const url = await loadFilledPdf();
+            const frame = document.getElementById('pdfFrame');
+            const status = document.getElementById('pdfStatus');
+            if (frame) {
+              frame.src = url;
+              frame.hidden = false;
+            }
+            if (status) status.remove();
+            const dl = document.getElementById('downloadBtn');
+            if (dl) {
+              dl.addEventListener('click', (e) => {
+                if (!pdfObjectUrl) return;
+                e.preventDefault();
+                const a = document.createElement('a');
+                a.href = pdfObjectUrl;
+                a.download = (data.form_name || 'form') + '.pdf';
+                a.click();
+              });
+            }
+          } catch (e) {
+            const status = document.getElementById('pdfStatus');
+            if (status) status.textContent = 'Could not load the filled PDF: ' + e.message;
+          }
+        }
+      }
+
+      async function sign() {
+        const btn = document.getElementById('signBtn');
+        if (btn) btn.disabled = true;
+        try {
+          const res = await fetch('/api/public/signing/' + encodeURIComponent(token) + '/sign', { method: 'POST' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data?.error?.message || res.statusText);
+          await render(data);
+        } catch (e) {
+          if (btn) btn.disabled = false;
+          const err = document.createElement('p');
+          err.className = 'err';
+          err.style.marginTop = '0.75rem';
+          err.textContent = e.message;
+          app.appendChild(err);
+        }
+      }
+
+      function escapeHtml(s) {
+        return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      }
+
+      load();
+    </script>
+  </body>
+</html>

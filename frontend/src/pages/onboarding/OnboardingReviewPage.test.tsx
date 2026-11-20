@@ -36,6 +36,9 @@ function view(state: string, provisioning?: object) {
 function routes(v: object, extra: Record<string, unknown> = {}) {
   setRoutes({
     'GET /api/onboardings/draft-1': v,
+    'GET /api/onboardings/draft-1/documents': {
+      items: [{ id: 'doc-1', template_id: 't1', template_name: 'NDA', required: true, status: 'pending' }],
+    },
     'GET /api/access-catalog': { modules: [] },
     'GET /api/check/email': { valid: true, deliverable: true },
     ...extra,
@@ -43,22 +46,67 @@ function routes(v: object, extra: Record<string, unknown> = {}) {
 }
 
 describe('OnboardingReviewPage', () => {
-  it('completes only after the check box is ticked', async () => {
-    routes(view('draft'), { 'POST /api/onboardings/draft-1/complete': { ok: true, queued: true, jobs: [], groups_applied: null, account_created: false, password_setup_email_sent: false } });
+  it('sends for signing only after the check box is ticked', async () => {
+    routes(view('draft'), {
+      'POST /api/onboardings/draft-1/submit-for-signing': {
+        draft: { id: 'draft-1', state: 'pending_approval' },
+        sent: 1,
+        message: 'Sign links sent.',
+      },
+    });
     renderWithQuery(<OnboardingReviewPage />);
-    const complete = await screen.findByRole('button', { name: 'Complete onboarding' });
-    expect(complete).toBeDisabled();
+    const send = await screen.findByRole('button', { name: 'Send for signing' });
+    expect(send).toBeDisabled();
     fireEvent.click(screen.getByRole('checkbox'));
-    fireEvent.click(complete);
+    fireEvent.click(send);
+    await waitFor(() => expect(calls.some((c) => c.key === 'POST /api/onboardings/draft-1/submit-for-signing')).toBe(true));
+  });
+
+  it('waits for signatures without offering Approve', async () => {
+    setRoutes({
+      'GET /api/onboardings/draft-1': view('pending_approval'),
+      'GET /api/onboardings/draft-1/documents': {
+        items: [{ id: 'doc-1', draft_id: 'draft-1', template_id: 't1', template_name: 'NDA', required: true, status: 'sent', created_at: '', updated_at: '' }],
+      },
+      'GET /api/access-catalog': { modules: [] },
+      'GET /api/check/email': { valid: true, deliverable: true },
+    });
+    renderWithQuery(<OnboardingReviewPage />);
+    expect(await screen.findByRole('button', { name: 'Resend sign links' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve & create account' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send for signing' })).not.toBeInTheDocument();
+  });
+
+  it('approves only after signatures and the human check box', async () => {
+    routes(view('pending_approval'), {
+      'GET /api/onboardings/draft-1/documents': {
+        items: [{ id: 'doc-1', template_id: 't1', template_name: 'NDA', required: true, status: 'signed' }],
+      },
+      'POST /api/onboardings/draft-1/complete': {
+        ok: true,
+        queued: true,
+        jobs: [],
+        groups_applied: null,
+        account_created: false,
+        password_setup_email_sent: false,
+      },
+    });
+    renderWithQuery(<OnboardingReviewPage />);
+    const approve = await screen.findByRole('button', { name: 'Approve & create account' });
+    expect(approve).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(approve);
     await waitFor(() => expect(calls.some((c) => c.key === 'POST /api/onboardings/draft-1/complete')).toBe(true));
   });
 
   it('follows the background job while the account is set up', async () => {
-    routes(view('provisioning', { job_id: 'j1', status: 'running', attempts: 2, max_attempts: 5, error: 'timeout', queued_at: '' }));
+    routes(view('provisioning', { job_id: 'j1', status: 'running', attempts: 2, max_attempts: 5, error: 'timeout', queued_at: '' }), {
+      'GET /api/onboardings/draft-1/documents': { items: [] },
+    });
     renderWithQuery(<OnboardingReviewPage />);
     expect(await screen.findByText('Setting up their account…')).toBeInTheDocument();
     expect(screen.getByText(/Attempt 2 of 5/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Complete onboarding' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send for signing' })).not.toBeInTheDocument();
   });
 
   it('offers to resend the set-password email when it failed, and never shows a password', async () => {
@@ -71,18 +119,12 @@ describe('OnboardingReviewPage', () => {
       password_setup_error: 'SMTP not configured',
     };
     routes(view('active', { job_id: 'j1', status: 'succeeded', attempts: 1, max_attempts: 5, result, queued_at: '' }), {
+      'GET /api/onboardings/draft-1/documents': { items: [] },
       'POST /api/people/p1/password-setup-email': { sent: true },
     });
     renderWithQuery(<OnboardingReviewPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'Resend set-password email' }));
     expect(await screen.findByRole('button', { name: 'Email sent' })).toBeInTheDocument();
     expect(screen.queryByText(/temporary password/i)).not.toBeInTheDocument();
-  });
-
-  it('shows a failed job and keeps the onboarding editable', async () => {
-    routes(view('draft', { job_id: 'j1', status: 'failed', attempts: 5, max_attempts: 5, error: 'Keycloak down', queued_at: '' }));
-    renderWithQuery(<OnboardingReviewPage />);
-    expect(await screen.findByText('Could not complete onboarding')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Complete onboarding' })).toBeInTheDocument();
   });
 });

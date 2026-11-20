@@ -53,11 +53,11 @@ export function OnboardingAccessPage() {
         defaults={department?.default_roles.map((r) => r.role_name)}
         intro={<>Pick their access groups, then switch on any extra modules they need.</>}
         allowSaveWhenClean
-        saveLabel="Save & continue to review"
+        saveLabel="Save & continue to documents"
         onSave={async (roles, bundleIds) => {
           if (editable) await assignRoles(id, { roles, bundle_ids: bundleIds });
           await qc.invalidateQueries({ queryKey: ['onboarding', id] });
-          await navigate({ to: '/onboarding/$id/review', params: { id } });
+          await navigate({ to: '/onboarding/$id/documents', params: { id } });
         }}
       />
     </div>

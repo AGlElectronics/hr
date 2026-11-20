@@ -5,6 +5,8 @@ import { ShieldAlert } from 'lucide-react';
 import { deleteWorkspaceAccount, listWorkspaceAccounts } from '@/api/admin';
 import { ApiError } from '@/api/client';
 import { getRetentionCandidates, getSettings, updateSettings, type Settings } from '@/api/settings';
+import { Link } from '@tanstack/react-router';
+
 import { DenConnection } from '@/components/DenConnection';
 import { TrainingRequirements } from '@/components/TrainingRequirements';
 import { renderWithFallback } from '@/lib/naming';
@@ -35,7 +37,7 @@ export function SettingsPage() {
   if (!form) return <p className="p-6 text-muted-foreground">{settings.error ? (settings.error as Error).message : 'Loading…'}</p>;
 
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
-  const setIn = <S extends 'identity' | 'retention' | 'workspace'>(section: S, k: keyof Settings[S], v: unknown) =>
+  const setIn = <S extends 'identity' | 'retention' | 'workspace' | 'signing'>(section: S, k: keyof Settings[S], v: unknown) =>
     setForm((f) => (f ? { ...f, [section]: { ...f[section], [k]: v } } : f));
   const errs = save.error instanceof ApiError ? ((save.error.details as Record<string, string> | undefined) ?? {}) : {};
   const dirty = comparable(form) !== comparable(settings.data);
@@ -196,6 +198,39 @@ export function SettingsPage() {
             </div>
           </div>
           {form.workspace.available && form.workspace.enabled && <SuspendedAccounts />}
+        </section>
+
+        <section className="space-y-4 rounded-lg border border-border bg-card p-4">
+          <h2 className="font-semibold">Forms &amp; onboarding</h2>
+          <p className="text-sm text-muted-foreground">
+            Upload PDFs and map fields on the{' '}
+            <Link to="/forms" className="text-primary hover:underline">
+              Forms
+            </Link>{' '}
+            page. Volunteers sign at sign-hr; Approve creates the account after required forms are signed or waived.
+          </p>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={form.signing?.allow_stub_skip ?? false}
+              onChange={(e) => setIn('signing', 'allow_stub_skip', e.target.checked)}
+            />
+            Allow waiving forms without a provider (local testing)
+          </label>
+          <Setting
+            label="Auto-delete pending onboardings after (days)"
+            hint={form.onboarding_auto_delete_managed_by === 'den' ? 'Managed in Den (hr.onboarding_auto_delete_days). 0 = never.' : '0 = never. Drafts older than this are deleted.'}
+            error={errs.onboarding_auto_delete_days}
+          >
+            <input
+              type="number"
+              min={0}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              disabled={form.onboarding_auto_delete_managed_by === 'den'}
+              value={form.onboarding_auto_delete_days ?? 30}
+              onChange={(e) => set('onboarding_auto_delete_days', Number(e.target.value))}
+            />
+          </Setting>
         </section>
 
         {save.error && Object.keys(errs).length === 0 && <p className="text-sm text-destructive">{(save.error as Error).message}</p>}
